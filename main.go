@@ -58,6 +58,16 @@ const (
 	cdSplitted
 )
 
+const (
+	// Cube rotation modes
+	rotationModeNormal = iota
+	rotationModeTumble
+	rotationModePulsate
+	rotationModeSwing
+	rotationModeBounce
+	rotationModeTotal // Total number of modes
+)
+
 // Color definitions for 3D cube faces
 var (
 	col0 = color.RGBA{0xE0, 0xA0, 0xC0, 0xFF}
@@ -361,6 +371,15 @@ type Game struct {
 	drawTriOp     *ebiten.DrawTrianglesOptions
 	drawRectOp    *ebiten.DrawRectShaderOptions
 	lastLetterNum int // Track last rendered letter number for caching
+
+	// New fields for cube movements
+	rotationMode     int     // Current rotation mode
+	rotationTimer    float64 // Timer to change mode
+	rotationDuration float64 // Duration of each mode
+	pulsePhase       float64 // Phase for pulsation effect
+	swingAmplitude   float64 // Swing amplitude
+	bounceVelocity   float64 // Bounce velocity
+	bouncePosition   float64 // Bounce position
 }
 
 // NewGame creates and initializes a new game instance
@@ -376,6 +395,15 @@ func NewGame() *Game {
 		drawOp:      &ebiten.DrawImageOptions{},
 		drawTriOp:   &ebiten.DrawTrianglesOptions{},
 		drawRectOp:  &ebiten.DrawRectShaderOptions{},
+
+		// New fields
+		rotationMode:     rotationModeNormal,
+		rotationTimer:    0,
+		rotationDuration: 300, // Change mode every 300 frames (~5 seconds)
+		pulsePhase:       0,
+		swingAmplitude:   1.0,
+		bounceVelocity:   0,
+		bouncePosition:   0,
 	}
 
 	// Initialize 3D cube vertices - perfect cube with equal dimensions
@@ -985,11 +1013,80 @@ func (g *Game) Update() error {
 
 		// Update 3D cube after delay
 		if g.scrollIteration > 25 {
-			g.rotation.X += rotationSpeed
-			g.rotation.Y += rotationSpeed
-			g.rotation.Z -= rotationSpeed
+			// Handle rotation mode changes
+			g.rotationTimer++
+			if g.rotationTimer >= g.rotationDuration {
+				g.rotationTimer = 0
+				// Smooth transition between modes
+				g.rotationMode = (g.rotationMode + 1) % rotationModeTotal
 
-			// Zoom in 3D cube
+				// Reset parameters based on new mode
+				switch g.rotationMode {
+				case rotationModeBounce:
+					g.bounceVelocity = 0.08
+					g.bouncePosition = 0
+				case rotationModeSwing:
+					// Adjust initial rotation to avoid jumps
+					g.rotation.X = math.Sin(g.rotationTimer*0.03) * 0.8
+					g.rotation.Z = math.Sin(g.rotationTimer*0.03) * 0.4
+					g.swingAmplitude = 1.0
+				case rotationModePulsate:
+					// Start pulse phase based on current rotation to avoid jumps
+					g.pulsePhase = math.Atan2(g.rotation.Y, g.rotation.X)
+				case rotationModeNormal:
+					// Continue from current position
+					// No reset needed
+				}
+			}
+
+			// Apply different movements based on mode
+			switch g.rotationMode {
+			case rotationModeNormal:
+				// Standard rotation (existing)
+				g.rotation.X += rotationSpeed
+				g.rotation.Y += rotationSpeed
+				g.rotation.Z -= rotationSpeed
+
+			case rotationModeTumble:
+				// Chaotic rotation with changing speed
+				speedVar := math.Sin(g.rotationTimer * 0.02)
+				g.rotation.X += rotationSpeed * (1 + speedVar)
+				g.rotation.Y += rotationSpeed * (1.5 - speedVar*0.5)
+				g.rotation.Z -= rotationSpeed * (0.5 + speedVar*0.5)
+
+			case rotationModePulsate:
+				// Rotation with pulsation
+				g.pulsePhase += 0.05
+				pulse := 1.0 + 0.3*math.Sin(g.pulsePhase)
+				g.rotation.X += rotationSpeed * pulse
+				g.rotation.Y += rotationSpeed * 0.7 * pulse
+				g.rotation.Z -= rotationSpeed * 0.3
+
+			case rotationModeSwing:
+				// Pendulum swing
+				swing := math.Sin(g.rotationTimer*0.03) * g.swingAmplitude
+				g.rotation.X = swing * 0.8
+				g.rotation.Y += rotationSpeed * 0.5
+				g.rotation.Z = swing * 0.4
+				g.swingAmplitude *= 0.998 // Slower damping
+
+			case rotationModeBounce:
+				// Bounce effect
+				g.bounceVelocity -= 0.001 // Reduced gravity
+				g.bouncePosition += g.bounceVelocity
+
+				// Limit descent to stay visible
+				if g.bouncePosition < -0.3 {
+					g.bouncePosition = -0.3
+					g.bounceVelocity = math.Abs(g.bounceVelocity) * 0.85 // Bounce with energy loss
+				}
+
+				g.rotation.X += rotationSpeed * 0.3
+				g.rotation.Y += rotationSpeed * (1 + math.Max(0, g.bouncePosition))
+				g.rotation.Z += rotationSpeed * 0.1
+			}
+
+			// Zoom in 3D cube (existing)
 			if g.zoom3d < 1 {
 				g.zoom3d += zoomSpeed
 				if g.zoom3d > 1 {
@@ -1073,13 +1170,30 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 }
 
-// draw3DCube renders the 3D cube with jelly-like deformation (optimized)
+// Modify draw3DCube function to add additional effects
 func (g *Game) draw3DCube() {
 	// Clear 3D canvas
 	g.my3dCanvas.Clear()
 
 	// Time factor for animation
 	time := g.pos * 3.0
+
+	// Adjust parameters based on mode
+	var extraScale float64 = 1.0
+	var extraOffsetY float64 = 0
+	var twistFactor float64 = 0
+
+	switch g.rotationMode {
+	case rotationModePulsate:
+		// Pulsing zoom effect
+		extraScale = 1.0 + 0.2*math.Sin(g.pulsePhase)
+	case rotationModeBounce:
+		// Vertical offset for bounce (limited)
+		extraOffsetY = g.bouncePosition * 50 // Reduced from 100 to 50
+	case rotationModeTumble:
+		// Twist effect
+		twistFactor = math.Sin(g.rotationTimer*0.01) * 0.5
+	}
 
 	// Pre-calculate sin/cos for rotation
 	cosX, sinX := math.Cos(g.rotation.X), math.Sin(g.rotation.X)
@@ -1095,9 +1209,19 @@ func (g *Game) draw3DCube() {
 	for i, vertex := range g.vertices {
 		x, y, z := vertex.X, vertex.Y, vertex.Z
 
-		// Calculate jelly deformation
+		// Apply extra scale
+		x *= extraScale
+		y *= extraScale
+		z *= extraScale
+
+		// Calculate jelly deformation (existing code)
 		positionKey := vertex.X*0.01 + vertex.Y*0.02 + vertex.Z*0.03
 		deformAmount := 25.0
+
+		// Adjust deformation based on mode
+		if g.rotationMode == rotationModePulsate {
+			deformAmount *= (1.0 + 0.3*math.Sin(g.pulsePhase*2))
+		}
 
 		// Multiple wobble frequencies for complex motion
 		wobbleX := math.Sin(time+positionKey*5.0) * deformAmount * 0.4
@@ -1127,6 +1251,14 @@ func (g *Game) draw3DCube() {
 		x += ripple * (vertex.Y / 80.0)
 		y += ripple * (vertex.X / 80.0)
 
+		// Add twist effect if applicable
+		if twistFactor != 0 {
+			angle := twistFactor * (vertex.Y / 80.0)
+			newX := x*math.Cos(angle) - z*math.Sin(angle)
+			newZ := x*math.Sin(angle) + z*math.Cos(angle)
+			x, z = newX, newZ
+		}
+
 		// Rotate around X axis
 		newY := y*cosX - z*sinX
 		newZ := y*sinX + z*cosX
@@ -1144,7 +1276,7 @@ func (g *Game) draw3DCube() {
 		// Add secondary wobble
 		secondaryWobble := 8.0
 		newX += secondaryBounce * secondaryWobble
-		newY += math.Cos(time*2.5) * secondaryWobble
+		newY += math.Cos(time*2.5)*secondaryWobble + extraOffsetY
 		newZ += math.Sin(time*3.7) * secondaryWobble * 0.5
 
 		g.transformedVertices[i] = Vector3{X: newX, Y: newY, Z: newZ}
