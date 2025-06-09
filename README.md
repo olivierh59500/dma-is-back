@@ -146,7 +146,7 @@ dma-is-back/
 
 ### Original Concept
 - **The 24H Demo (TCB)**: Original Atari ST demo effects
-- **Megadist Demo (TCB)**: Distortion scrolling inspiration
+- **Megadist Demo (ULM)**: Distortion scrolling inspiration
 
 ### Remake
 - **Code**: [olivierh59500](https://github.com/olivierh59500/dma-is-back)
