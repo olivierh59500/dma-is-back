@@ -35,7 +35,7 @@ const (
 
 	// Animation parameters
 	fadeSpeed     = 0.03 // Doubled from 0.01 for faster transitions
-	scrollSpeed   = 4
+	scrollSpeed   = 8
 	rotationSpeed = 0.05
 	zoomSpeed     = 0.01
 	posSpeed      = 0.014
@@ -305,9 +305,9 @@ func Fragment(position vec4, texCoord vec2, color vec4) vec4 {
 // Game represents the main demo state
 type Game struct {
 	// Images
-	introImg *ebiten.Image
-	backImg  *ebiten.Image
-	fontImg  *ebiten.Image
+	//	introImg *ebiten.Image
+	backImg *ebiten.Image
+	fontImg *ebiten.Image
 
 	// Canvases for different rendering layers
 	stCanvas    *ebiten.Image // Main ST screen canvas
@@ -626,7 +626,6 @@ func (g *Game) createCurves() {
 		case cdSplitted:
 			step, progress = 0.18, 0
 		}
-
 		local := []float64{}
 		decal := 0.0
 		previous := 0
@@ -888,15 +887,9 @@ func (g *Game) drawMainScroll() {
 		// Map screen line to font line
 		sourceFontLine := ligne / int(demoFontScale)
 
-		// Calculate wave-based horizontal offset
+		// Calculate wave-based horizontal offset (do not wrap negatives)
 		frontWave := g.getWave(g.frontWavePos + sourceFontLine)
-		scrollX := frontWave - g.letterDecal
-
-		// Wrap scroll position
-		scrollX = scrollX % scrollWidth
-		if scrollX < 0 {
-			scrollX += scrollWidth
-		}
+		scrollXRaw := frontWave - g.letterDecal
 
 		// Calculate source line with bounce effect
 		scaledLine := ((sourceFontLine+bounce)%fontHeight)*int(demoFontScale) + (ligne % int(demoFontScale))
@@ -906,7 +899,24 @@ func (g *Game) drawMainScroll() {
 			scaledLine = scaledLine % scaledFontHeight
 		}
 
-		// Draw line with proper wrapping
+		// Drawing rules:
+		// - If scrollXRaw < 0: clamp (no wrap). Leave left side empty and draw the visible right part.
+		// - Else: allow wrapping as before.
+		if scrollXRaw < 0 {
+			// Visible width after clamping (part of the text entering from the right)
+			visibleWidth := stCanvasWidth + scrollXRaw // scrollXRaw is negative here
+			if visibleWidth > 0 {
+				// Draw [0 .. visibleWidth) from source at destination x = -scrollXRaw
+				srcRect := image.Rect(0, scaledLine, minInt(visibleWidth, scrollWidth), scaledLine+1)
+				g.drawOp.GeoM.Reset()
+				g.drawOp.GeoM.Translate(float64(-scrollXRaw), float64(ligne))
+				g.stCanvas.DrawImage(g.surfScroll.SubImage(srcRect).(*ebiten.Image), g.drawOp)
+			}
+			continue
+		}
+
+		// Non-negative offset: apply wrapping logic
+		scrollX := scrollXRaw % scrollWidth
 		if scrollX >= scrollWidth-stCanvasWidth {
 			// Near end, need to wrap
 			width1 := scrollWidth - scrollX
@@ -933,6 +943,14 @@ func (g *Game) drawMainScroll() {
 			g.stCanvas.DrawImage(g.surfScroll.SubImage(srcRect).(*ebiten.Image), g.drawOp)
 		}
 	}
+}
+
+// minInt returns the smaller of two ints.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // loadImages loads all image assets
