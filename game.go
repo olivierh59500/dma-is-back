@@ -1,4 +1,5 @@
-package main
+// Package dmaisback implements the DMA is Back demo for desktop and mobile.
+package dmaisback
 
 import (
 	"bytes"
@@ -10,7 +11,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"sort"
 	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -28,8 +28,10 @@ const (
 	stCanvasHeight = 400
 
 	// Logo pattern dimensions
-	logoPatternX = 6
-	logoPatternY = 6
+	// Two columns and four overlapping rows cover every animated viewport
+	// position while keeping the backing texture small enough for mobile GPUs.
+	logoPatternX = 2
+	logoPatternY = 4
 	logoTileW    = 640
 	logoTileH    = 200
 
@@ -111,7 +113,6 @@ type faceWithDepth struct {
 // YMPlayer wraps the YM player for use with Ebiten's audio system
 type YMPlayer struct {
 	player       *stsound.StSound
-	sampleRate   int
 	buffer       []int16
 	mutex        sync.Mutex
 	position     int64
@@ -140,7 +141,6 @@ func NewYMPlayer(data []byte, sampleRate int, loop bool) (*YMPlayer, error) {
 
 	return &YMPlayer{
 		player:       player,
-		sampleRate:   sampleRate,
 		buffer:       make([]int16, 4096), // Audio buffer size
 		totalSamples: totalSamples,
 		loop:         loop,
@@ -152,12 +152,15 @@ func NewYMPlayer(data []byte, sampleRate int, loop bool) (*YMPlayer, error) {
 func (y *YMPlayer) Read(p []byte) (n int, err error) {
 	y.mutex.Lock()
 	defer y.mutex.Unlock()
+	if y.player == nil {
+		return 0, io.EOF
+	}
 
 	// Calculate how many samples we need (2 bytes per sample, stereo)
 	samplesNeeded := len(p) / 4
-
-	// Prepare output buffer for stereo samples
-	outBuffer := make([]int16, samplesNeeded*2)
+	if samplesNeeded == 0 {
+		return 0, nil
+	}
 
 	// Process audio in chunks
 	processed := 0
@@ -172,9 +175,7 @@ func (y *YMPlayer) Read(p []byte) (n int, err error) {
 		if !y.player.Compute(y.buffer[:chunkSize], chunkSize) {
 			if !y.loop {
 				// End of music, fill with silence
-				for i := processed * 2; i < len(outBuffer); i++ {
-					outBuffer[i] = 0
-				}
+				clear(p[processed*4 : samplesNeeded*4])
 				err = io.EOF
 				break
 			}
@@ -184,27 +185,18 @@ func (y *YMPlayer) Read(p []byte) (n int, err error) {
 		// Convert mono to stereo and apply volume
 		for i := 0; i < chunkSize; i++ {
 			sample := int16(float64(y.buffer[i]) * y.volume)
-			outBuffer[(processed+i)*2] = sample   // Left channel
-			outBuffer[(processed+i)*2+1] = sample // Right channel
+			offset := (processed + i) * 4
+			p[offset] = byte(sample)
+			p[offset+1] = byte(sample >> 8)
+			p[offset+2] = byte(sample)
+			p[offset+3] = byte(sample >> 8)
 		}
 
 		processed += chunkSize
 		y.position += int64(chunkSize)
 	}
 
-	// Convert int16 samples to bytes
-	buf := make([]byte, 0, len(outBuffer)*2)
-	for _, sample := range outBuffer {
-		buf = append(buf, byte(sample), byte(sample>>8))
-	}
-
-	copy(p, buf)
-	n = len(buf)
-	if n > len(p) {
-		n = len(p)
-	}
-
-	return n, err
+	return samplesNeeded * 4, err
 }
 
 // Seek implements io.Seeker for positioning in the audio stream
@@ -337,6 +329,7 @@ type Game struct {
 	audioContext *audio.Context
 	audioPlayer  *audio.Player
 	ymPlayer     *YMPlayer
+	audioReady   bool
 
 	// State flags
 	introComplete bool
@@ -385,16 +378,17 @@ type Game struct {
 // NewGame creates and initializes a new game instance
 func NewGame() *Game {
 	g := &Game{
-		fadeImg:     2.0,
-		zoom3d:      0.0,
-		letterData:  make(map[rune]*Letter),
-		introX:      -1,
-		introLetter: -1,
-		introTile:   -1,
-		introSpeed:  scrollSpeed,
-		drawOp:      &ebiten.DrawImageOptions{},
-		drawTriOp:   &ebiten.DrawTrianglesOptions{},
-		drawRectOp:  &ebiten.DrawRectShaderOptions{},
+		fadeImg:       2.0,
+		zoom3d:        0.0,
+		letterData:    make(map[rune]*Letter),
+		introX:        -1,
+		introLetter:   -1,
+		introTile:     -1,
+		introSpeed:    scrollSpeed,
+		drawOp:        &ebiten.DrawImageOptions{},
+		drawTriOp:     &ebiten.DrawTrianglesOptions{},
+		drawRectOp:    &ebiten.DrawRectShaderOptions{},
+		lastLetterNum: -1,
 
 		// New fields
 		rotationMode:     rotationModeNormal,
@@ -487,9 +481,6 @@ func NewGame() *Game {
 	// Precalculate positions and waves
 	g.precalcPosition()
 	g.precalcMainWave()
-
-	// Initialize audio with YM music
-	g.initAudio()
 
 	// Compile CRT shader
 	var err error
@@ -1004,6 +995,14 @@ func (g *Game) initAudio() {
 
 // Update updates the game state
 func (g *Game) Update() error {
+	if !g.audioReady {
+		// The Android activity installs the gomobile context and Ebiten view
+		// before the first update. Opening the audio device here avoids doing
+		// so too early while libgojni is still being loaded.
+		g.audioReady = true
+		g.initAudio()
+	}
+
 	if !g.introComplete {
 		// Update intro animation
 		g.animIntro()
@@ -1129,7 +1128,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		// Draw the intro canvas
 		g.drawOp.GeoM.Reset()
 		g.drawOp.ColorScale.Reset()
-		g.drawOp.GeoM.Translate(64, 70)
+		g.drawOp.GeoM.Translate(sceneOffsetX(screen.Bounds().Dx()), 70)
 		screen.DrawImage(g.stCanvas, g.drawOp)
 	} else {
 		// Draw main demo
@@ -1182,7 +1181,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		// Final composite with fade
 		g.drawOp.GeoM.Reset()
 		g.drawOp.ColorScale.Reset()
-		g.drawOp.GeoM.Translate(64, 70)
+		g.drawOp.GeoM.Translate(sceneOffsetX(screen.Bounds().Dx()), 70)
 		g.drawOp.ColorScale.ScaleAlpha(float32(g.fadeImg))
 		screen.DrawImage(g.stCanvas, g.drawOp)
 	}
@@ -1309,10 +1308,17 @@ func (g *Game) draw3DCube() {
 		g.facesWithDepth[i].depth = avgZ
 	}
 
-	// Sort faces back to front (optimized)
-	sort.Slice(g.facesWithDepth, func(i, j int) bool {
-		return g.facesWithDepth[i].depth < g.facesWithDepth[j].depth
-	})
+	// Sort the six faces back to front. An insertion sort avoids the reflection
+	// and heap escape caused by sort.Slice in this per-frame hot path.
+	for i := 1; i < len(g.facesWithDepth); i++ {
+		face := g.facesWithDepth[i]
+		j := i
+		for j > 0 && g.facesWithDepth[j-1].depth > face.depth {
+			g.facesWithDepth[j] = g.facesWithDepth[j-1]
+			j--
+		}
+		g.facesWithDepth[j] = face
+	}
 
 	// Draw faces
 	centerX := float32(g.my3dCanvas.Bounds().Dx() / 2)
@@ -1381,9 +1387,30 @@ func (g *Game) draw3DCube() {
 	}
 }
 
-// Layout returns the screen dimensions
+func logicalWidth(outsideWidth, outsideHeight int) int {
+	if outsideWidth <= 0 || outsideHeight <= 0 {
+		return screenWidth
+	}
+
+	width := (outsideWidth*screenHeight + outsideHeight - 1) / outsideHeight
+	if width < screenWidth {
+		return screenWidth
+	}
+	const maxLogicalWidth = 1280
+	if width > maxLogicalWidth {
+		return maxLogicalWidth
+	}
+	return width
+}
+
+func sceneOffsetX(layoutWidth int) float64 {
+	return float64(layoutWidth-stCanvasWidth) / 2
+}
+
+// Layout preserves the original aspect ratio and uses black side bands on
+// wide displays instead of stretching the Atari ST canvas.
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
-	return screenWidth, screenHeight
+	return logicalWidth(outsideWidth, outsideHeight), screenHeight
 }
 
 // Cleanup releases resources when game exits
@@ -1397,19 +1424,4 @@ func (g *Game) Cleanup() {
 	if g.crtShader != nil {
 		g.crtShader.Dispose()
 	}
-}
-
-func main() {
-	ebiten.SetWindowSize(screenWidth, screenHeight)
-	ebiten.SetWindowTitle("DMA is back!")
-
-	game := NewGame()
-
-	// Run the game
-	if err := ebiten.RunGame(game); err != nil {
-		log.Fatal(err)
-	}
-
-	// Cleanup on exit
-	game.Cleanup()
 }

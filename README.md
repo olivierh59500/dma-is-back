@@ -2,9 +2,9 @@
 
 <div align="center">
   
-![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=for-the-badge&logo=go)
-![Ebiten](https://img.shields.io/badge/Ebiten-v2.6.3-FF6B6B?style=for-the-badge)
-![Platform](https://img.shields.io/badge/Platform-Windows%20|%20macOS%20|%20Linux%20|%20Web-4EAA25?style=for-the-badge)
+![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=for-the-badge&logo=go)
+![Ebiten](https://img.shields.io/badge/Ebitengine-v2.9.11-FF6B6B?style=for-the-badge)
+![Platform](https://img.shields.io/badge/Platform-Desktop%20|%20Android%20|%20Web-4EAA25?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)
 
 **A modern Go/Ebiten remake of a classic Atari ST demoscene production**
@@ -38,7 +38,7 @@ Originally inspired by demos from The Carebears (TCB), this remake showcases how
 - **Looped Music**: Classic demoscene soundtrack that brings back the nostalgia
 
 ### Technical Features
-- **Cross-platform**: Runs on Windows, macOS, Linux, and Web browsers (via WebAssembly)
+- **Cross-platform**: Runs on Windows, macOS, Linux, Android, and Web browsers (via WebAssembly)
 - **Optimized Performance**: Pre-allocated buffers and efficient rendering
 - **60 FPS**: Smooth animations matching modern display standards
 
@@ -48,9 +48,10 @@ Experience the demo directly in your browser: [Coming Soon]
 
 ## 📋 Requirements
 
-- Go 1.21 or higher
+- Go 1.25 or higher
 - For native builds: OpenGL support
 - For web builds: Modern browser with WebAssembly support
+- For Android builds: Android SDK 36, NDK 28.2, JDK 17, and an arm64 device
 
 ## 🔧 Installation
 
@@ -69,7 +70,7 @@ go mod download
 
 3. Run the demo:
 ```bash
-go run main.go
+go run ./cmd/dmaisback
 ```
 
 ### Building from Source
@@ -77,14 +78,27 @@ go run main.go
 #### Native Build
 ```bash
 # Windows
-GOOS=windows GOARCH=amd64 go build -o dma-demo.exe main.go
+GOOS=windows GOARCH=amd64 go build -o dma-demo.exe ./cmd/dmaisback
 
 # macOS
-GOOS=darwin GOARCH=amd64 go build -o dma-demo main.go
+GOOS=darwin GOARCH=amd64 go build -o dma-demo ./cmd/dmaisback
 
 # Linux
-GOOS=linux GOARCH=amd64 go build -o dma-demo main.go
+GOOS=linux GOARCH=amd64 go build -o dma-demo ./cmd/dmaisback
 ```
+
+#### Android (Pixel / arm64)
+
+With USB debugging enabled and exactly one authorized Android device connected:
+
+```bash
+./scripts/run-android.sh
+```
+
+The script generates the Ebitengine AAR, builds a debug APK, installs it, and
+launches `com.olivierh.dmaisback/.MainActivity`. It uses the validated toolchain:
+Ebitengine 2.9.11, Gradle 8.11.1, Android Gradle Plugin 8.10.1, SDK 36,
+NDK 28.2, and JDK 17.
 
 #### WebAssembly Build
 ```bash
@@ -92,7 +106,7 @@ GOOS=linux GOARCH=amd64 go build -o dma-demo main.go
 cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" .
 
 # Build WASM binary
-GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o demo.wasm main.go
+GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o demo.wasm ./cmd/dmaisback
 
 # Serve locally
 python3 -m http.server 8080
@@ -103,14 +117,18 @@ python3 -m http.server 8080
 
 ```
 dma-is-back/
-├── main.go                 # Main application code
+├── game.go                 # Shared demo implementation
+├── cmd/dmaisback/          # Desktop/Web entry point
+├── mobile/                 # ebitenmobile bridge
+├── android/                # Native Android shell and Gradle wrapper
+├── scripts/run-android.sh  # Build, install, and launch on an arm64 device
 ├── assets/                 # Demo resources
 │   ├── font.png           # Bitmap font (Atari ST style)
 │   ├── small-dma-jelly.png # Logo/background image
 │   └── Mindbomb.ym        # YM chiptune music
 ├── index.html             # Web deployment HTML
 ├── wasm_exec.js           # Go WASM support file
-├── go.mod                 # Go module file
+├── go.mod                  # Go module file
 └── README.md              # This file
 ```
 
@@ -130,7 +148,8 @@ dma-is-back/
 ### Graphics Engine
 - **Ebiten v2**: Hardware-accelerated 2D game engine
 - **Custom Shaders**: GLSL-style shaders compiled for Ebiten
-- **Resolution**: 320x200 (classic Atari ST) upscaled to 768x540
+- **Resolution**: 640x400 Atari ST canvas in a 768x540 logical viewport
+- **Wide screens**: Preserves the demo aspect ratio and centers it instead of stretching it
 
 ### Audio System
 - **YM Player**: Accurate YM2149 sound chip emulation

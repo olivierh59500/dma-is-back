@@ -1,1 +1,14 @@
 .DS_Store
+
+# Go build artifacts
+/dma-is-back
+*.exe
+*.test
+
+# Android generated files
+android/.gradle/
+android/build/
+android/app/build/
+android/app/libs/*.aar
+android/app/libs/*-sources.jar
+android/local.properties
