@@ -1,10 +1,13 @@
 // Package dmaisback implements the DMA is Back demo for desktop and mobile.
 package dmaisback
 
+import originalassets "dma-is-back"
+
 import (
 	"bytes"
-	_ "embed"
+
 	"fmt"
+	"github.com/olivierh59500/democonstructionkit/scrolling"
 	"image"
 	"image/color"
 	_ "image/png"
@@ -85,15 +88,16 @@ var (
 
 // Embedded assets - resources compiled into the binary
 var (
-	//go:embed assets/small-dma-jelly.png
-	backData []byte
-	//go:embed assets/font.png
-	fontData []byte
-	//go:embed assets/Mindbomb.ym
-	musicData []byte
+	backData = originalassets.DCKAssetBackData()
+
+	fontData = originalassets.DCKAssetFontData()
+
+	musicData = originalassets.
+
+		// Letter represents a character in the bitmap font
+		DCKAssetMusicData()
 )
 
-// Letter represents a character in the bitmap font
 type Letter struct {
 	x, y  int
 	width int
@@ -352,6 +356,7 @@ func Fragment(position vec4, texCoord vec2, color vec4) vec4 {
 
 // Game represents the main demo state
 type Game struct {
+	scrollRenderer *scrolling.Scrolling
 	// Images
 	backImg  *ebiten.Image
 	fontImg  *ebiten.Image
@@ -533,30 +538,31 @@ func NewGame() *Game {
 
 // displayText renders text to scroll surface with scaling for demo
 func (g *Game) displayText(letterOffset int) {
-	// Only re-render if letter offset changed significantly
 	if letterOffset == g.lastLetterNum {
 		return
 	}
 	g.lastLetterNum = letterOffset
-
 	g.surfScroll.Clear()
-
-	xPos := 0
-	i := 0
-	// Anything past the surface bounds is clipped and can never be sampled.
-	maxWidth := g.surfScroll.Bounds().Dx()
-
-	for xPos < maxWidth {
-		char := g.getLetter(i + letterOffset)
-		if letter, ok := g.letterData[char]; ok {
-			g.drawOp.GeoM.Reset()
-			g.drawOp.GeoM.Scale(demoFontScale, demoFontScale)
-			g.drawOp.GeoM.Translate(float64(xPos), 0)
-			g.surfScroll.DrawImage(letter.image, g.drawOp)
-			xPos += int(float64(letter.width) * demoFontScale)
+	if g.scrollRenderer == nil {
+		glyphs := make([]scrolling.Glyph, len(g.scrollTextRunes))
+		for i, r := range g.scrollTextRunes {
+			if letter, ok := g.letterData[r]; ok {
+				glyphs[i] = scrolling.Glyph{Image: letter.image, Advance: float64(letter.width)}
+			}
 		}
-		i++
+		var err error
+		g.scrollRenderer, err = scrolling.New(scrolling.Config{Glyphs: glyphs})
+		if err != nil {
+			panic(err)
+		}
 	}
+	state := g.scrollRenderer.Window(letterOffset, float64(g.surfScroll.Bounds().Dx())/demoFontScale)
+	state.ScaleX = demoFontScale
+	state.ScaleY = demoFontScale
+	state.X *= demoFontScale
+	state.Options = *g.drawOp
+	state.Options.GeoM.Reset()
+	g.scrollRenderer.DrawAt(g.surfScroll, state)
 }
 
 // initFontData initializes the bitmap font character data

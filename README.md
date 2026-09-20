@@ -200,3 +200,9 @@ Special thanks to the entire Atari ST demoscene community for pushing the bounda
 Made with ❤️ and lots of nostalgia
 
 </div>
+
+## Optional DCK version
+
+The original implementation remains at its original paths. Run it with `go run ./cmd/dmaisback`.
+
+The construction-kit version is in [dck/](dck/README.md). Run `go run ./dck/cmd/dmaisback` from this directory. Both versions share the original assets.
