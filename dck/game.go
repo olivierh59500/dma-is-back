@@ -5,6 +5,7 @@ import originalassets "dma-is-back"
 
 import (
 	"bytes"
+	"github.com/olivierh59500/democonstructionkit/geometry"
 
 	"fmt"
 	"github.com/olivierh59500/democonstructionkit/scrolling"
@@ -105,9 +106,7 @@ type Letter struct {
 }
 
 // Vector3 represents a 3D point in space
-type Vector3 struct {
-	X, Y, Z float64
-}
+type Vector3 = geometry.Vec3
 
 // Face represents a quad face with 4 vertices and a color
 type Face struct {
@@ -356,7 +355,13 @@ func Fragment(position vec4, texCoord vec2, color vec4) vec4 {
 
 // Game represents the main demo state
 type Game struct {
-	scrollRenderer *scrolling.Scrolling
+	smoothCubeTransitions      bool
+	cubeHandoff                geometry.Handoff
+	cubePrevious, cubeIncoming []Vector3
+	cubeTick                   int
+	cubeChanged                bool
+	swingOriginX, swingOriginZ float64
+	scrollRenderer             *scrolling.Scrolling
 	// Images
 	backImg  *ebiten.Image
 	fontImg  *ebiten.Image
@@ -438,16 +443,17 @@ type Game struct {
 // NewGame creates and initializes a new game instance
 func NewGame() *Game {
 	g := &Game{
-		fadeImg:       2.0,
-		zoom3d:        0.0,
-		letterData:    make(map[rune]*Letter),
-		introX:        -1,
-		introLetter:   -1,
-		introTile:     -1,
-		introSpeed:    scrollSpeed,
-		drawOp:        &ebiten.DrawImageOptions{},
-		drawRectOp:    &ebiten.DrawRectShaderOptions{},
-		lastLetterNum: -1,
+		smoothCubeTransitions: true,
+		fadeImg:               2.0,
+		zoom3d:                0.0,
+		letterData:            make(map[rune]*Letter),
+		introX:                -1,
+		introLetter:           -1,
+		introTile:             -1,
+		introSpeed:            scrollSpeed,
+		drawOp:                &ebiten.DrawImageOptions{},
+		drawRectOp:            &ebiten.DrawRectShaderOptions{},
+		lastLetterNum:         -1,
 
 		// New fields
 		rotationMode:     rotationModeNormal,
@@ -1053,6 +1059,12 @@ func (g *Game) initAudio() {
 
 // Update updates the game state
 func (g *Game) Update() error {
+	if len(g.cubePrevious) != len(g.vertices) {
+		g.cubePrevious = make([]Vector3, len(g.vertices))
+		g.cubeIncoming = make([]Vector3, len(g.vertices))
+	}
+	g.sampleCube(g.cubePrevious)
+	g.cubeChanged = false
 	if !g.audioReady {
 		// The Android activity installs the gomobile context and Ebiten view
 		// before the first update. Opening the audio device here avoids doing
@@ -1095,6 +1107,7 @@ func (g *Game) Update() error {
 				g.rotationTimer = 0
 				// Smooth transition between modes
 				g.rotationMode = (g.rotationMode + 1) % rotationModeTotal
+				g.cubeChanged = true
 
 				// Reset parameters based on new mode
 				switch g.rotationMode {
@@ -1103,8 +1116,11 @@ func (g *Game) Update() error {
 					g.bouncePosition = 0
 				case rotationModeSwing:
 					// Adjust initial rotation to avoid jumps
-					g.rotation.X = math.Sin(g.rotationTimer*0.03) * 0.8
-					g.rotation.Z = math.Sin(g.rotationTimer*0.03) * 0.4
+					g.swingOriginX = g.rotation.X
+					g.swingOriginZ = g.rotation.Z
+					if !g.smoothCubeTransitions {
+						g.swingOriginX, g.swingOriginZ = 0, 0
+					}
 					g.swingAmplitude = 1.0
 				case rotationModePulsate:
 					// Start pulse phase based on current rotation to avoid jumps
@@ -1141,9 +1157,9 @@ func (g *Game) Update() error {
 			case rotationModeSwing:
 				// Pendulum swing
 				swing := math.Sin(g.rotationTimer*0.03) * g.swingAmplitude
-				g.rotation.X = swing * 0.8
+				g.rotation.X = g.swingOriginX + swing*0.8
 				g.rotation.Y += rotationSpeed * 0.5
-				g.rotation.Z = swing * 0.4
+				g.rotation.Z = g.swingOriginZ + swing*0.4
 				g.swingAmplitude *= 0.998 // Slower damping
 
 			case rotationModeBounce:
@@ -1169,6 +1185,14 @@ func (g *Game) Update() error {
 					g.zoom3d = 1
 				}
 			}
+		}
+	}
+
+	g.cubeTick++
+	if g.cubeChanged && g.smoothCubeTransitions {
+		g.sampleRawCube(g.cubeIncoming)
+		if err := g.cubeHandoff.Begin(g.cubePrevious, g.cubeIncoming, float64(g.cubeTick)/60, .75); err != nil {
+			return err
 		}
 	}
 
@@ -1258,7 +1282,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 }
 
 // draw3DCube transforms and draws the jelly cube directly onto the ST canvas.
-func (g *Game) draw3DCube() {
+// sampleRawCube evaluates an effect without reading or advancing render state.
+func (g *Game) sampleRawCube(dst []Vector3) {
 	// Time factor for animation
 	time := g.pos * 3.0
 
@@ -1365,9 +1390,13 @@ func (g *Game) draw3DCube() {
 		newY += secondaryOffsetY
 		newZ += secondaryOffsetZ
 
-		g.transformedVertices[i] = Vector3{X: newX, Y: newY, Z: newZ}
+		dst[i] = Vector3{X: newX, Y: newY, Z: newZ}
 	}
 
+}
+
+func (g *Game) draw3DCube() {
+	g.sampleCube(g.transformedVertices)
 	// Calculate face depths
 	for i, face := range g.faces {
 		// Calculate average Z depth
@@ -1514,3 +1543,15 @@ func (g *Game) Cleanup() {
 		g.crtShader.Deallocate()
 	}
 }
+
+// sampleCube includes any active handoff without depending on Draw calls.
+func (g *Game) sampleCube(dst []Vector3) {
+	g.sampleRawCube(dst)
+	if g.smoothCubeTransitions {
+		g.cubeHandoff.Apply(dst, dst, float64(g.cubeTick)/60)
+	}
+}
+
+// SetSmoothTransitions selects continuous cube effects or the historical path.
+// Configure this before the first Update; the DCK version enables it by default.
+func (g *Game) SetSmoothTransitions(enabled bool) { g.smoothCubeTransitions = enabled }
