@@ -5,7 +5,9 @@ import originalassets "dma-is-back"
 
 import (
 	"bytes"
+	"github.com/olivierh59500/democonstructionkit/composite"
 	"github.com/olivierh59500/democonstructionkit/geometry"
+	"github.com/olivierh59500/democonstructionkit/presets"
 
 	"fmt"
 	"github.com/olivierh59500/democonstructionkit/scrolling"
@@ -357,6 +359,7 @@ func Fragment(position vec4, texCoord vec2, color vec4) vec4 {
 type Game struct {
 	smoothCubeTransitions      bool
 	cubeHandoff                geometry.Handoff
+	cubeDeformer               *geometry.DeformProgram
 	cubePrevious, cubeIncoming []Vector3
 	cubeTick                   int
 	cubeChanged                bool
@@ -646,85 +649,13 @@ func (g *Game) initFontData() {
 
 // createCurves generates the wave curves for distortion effects
 func (g *Game) createCurves() {
-	for funcType := 0; funcType <= 7; funcType++ {
-		var step, progress float64
-
-		// Set parameters for each wave type
-		switch funcType {
-		case cdZero:
-			step, progress = 2.25, 0
-		case cdSlowSin:
-			step, progress = 0.20, 140
-		case cdMedSin:
-			step, progress = 0.25, 175
-		case cdFastSin:
-			step, progress = 0.30, 210
-		case cdSlowDist:
-			step, progress = 0.12, 175
-		case cdMedDist:
-			step, progress = 0.16, 210
-		case cdFastDist:
-			step, progress = 0.20, 245
-		case cdSplitted:
-			step, progress = 0.18, 0
-		}
-		maxAngle := 360.0
-		if funcType == cdSplitted {
-			maxAngle = 720.0
-		}
-		local := make([]float64, 0, int(math.Ceil(maxAngle/step)))
-		decal := 0.0
-		previous := 0
-
-		// Generate wave values
-		for i := 0.0; i < maxAngle-step; i += step {
-			val := 0.0
-			rad := i * math.Pi / 180
-
-			// Calculate wave value based on type
-			switch funcType {
-			case cdZero:
-				val = 0
-			case cdSlowSin:
-				val = 100 * math.Sin(rad)
-			case cdMedSin:
-				val = 110 * math.Sin(rad)
-			case cdFastSin:
-				val = 120 * math.Sin(rad)
-			case cdSlowDist:
-				val = 100*math.Sin(rad) + 25.0*math.Sin(rad*10)
-			case cdMedDist:
-				val = 110*math.Sin(rad) + 27.5*math.Sin(rad*9)
-			case cdFastDist:
-				val = 120*math.Sin(rad) + 30.0*math.Sin(rad*8)
-			case cdSplitted:
-				dir := 1.0
-				if len(local)%2 == 1 {
-					dir = -1.0
-				}
-				amp := 12.0
-				if i < 160 {
-					amp *= i / 160
-				} else if (720 - 160) < i {
-					amp *= (720 - i) / 160
-				}
-				val = 90*math.Sin(rad) + dir*amp*math.Sin(rad*3)
-			}
-			local = append(local, val)
-		}
-
-		// Convert to delta values
-		g.curves[funcType] = make([]int, len(local))
-		for i := 0; i < len(local); i++ {
-			nitem := -int(math.Floor(local[i] - decal))
-			g.curves[funcType][i] = nitem - previous
-			previous = nitem
-			decal += progress / float64(len(local))
-		}
+	curves, err := presets.RibbonCurves(1)
+	if err != nil {
+		panic(err)
 	}
+	g.curves = curves[:8]
 }
 
-// precalcPosition precalculates text positions with scaled font
 func (g *Game) precalcPosition() {
 	count := 0
 	g.position = make([]int, 0, len(g.scrollTextRunes))
@@ -747,61 +678,21 @@ func (g *Game) precalcMainWave() {
 		cdSplitted,
 	}
 
-	count := 0
-	totalLength := 0
-	for _, waveType := range frontMainWaveTable {
-		totalLength += len(g.curves[waveType])
-	}
-	g.frontMainWave = make([]int, 0, totalLength)
-
-	// Build combined wave from sequence
-	for _, waveType := range frontMainWaveTable {
-		wave := g.curves[waveType]
-		for _, val := range wave {
-			count += val
-			g.frontMainWave = append(g.frontMainWave, count)
-		}
+	var err error
+	g.frontMainWave, err = composite.JoinDeltaCurves(g.curves, frontMainWaveTable)
+	if err != nil {
+		panic(err)
 	}
 }
 
-// getSum calculates sum with wrapping
 func (g *Game) getSum(arr []int, index, decal int) int {
-	n := len(arr)
-	if n == 0 {
-		return decal
-	}
-
-	maxVal := arr[n-1]
-	f := index / n
-	m := index % n
-	return decal + f*maxVal + arr[m]
+	return composite.CumulativeAt(arr, index, decal)
 }
 
-// updateWaveByStrip computes the horizontal displacement once per three-pixel
-// strip. The previous scanline loop recalculated the same value three times
-// and performed a division and modulo for every lookup.
 func (g *Game) updateWaveByStrip() {
-	wave := g.frontMainWave
-	if len(wave) == 0 {
-		clear(g.waveByStrip[:])
-		return
-	}
-
-	index := g.frontWavePos
-	cycle := index / len(wave)
-	position := index % len(wave)
-	offset := cycle * wave[len(wave)-1]
-	for i := range g.waveByStrip {
-		g.waveByStrip[i] = offset + wave[position]
-		position++
-		if position == len(wave) {
-			position = 0
-			offset += wave[len(wave)-1]
-		}
-	}
+	composite.FillCumulative(g.waveByStrip[:], g.frontMainWave, g.frontWavePos, 0)
 }
 
-// getPosition gets text position
 func (g *Game) getPosition(i int) int {
 	if i > 0 && i <= len(g.position) {
 		return g.getSum(g.position, i-1, 0)
@@ -1284,119 +1175,64 @@ func (g *Game) Draw(screen *ebiten.Image) {
 // draw3DCube transforms and draws the jelly cube directly onto the ST canvas.
 // sampleRawCube evaluates an effect without reading or advancing render state.
 func (g *Game) sampleRawCube(dst []Vector3) {
-	// Time factor for animation
-	time := g.pos * 3.0
-
-	// Adjust parameters based on mode
-	var extraScale float64 = 1.0
-	var extraOffsetY float64 = 0
-	var twistFactor float64 = 0
-
+	if g.cubeDeformer == nil {
+		g.cubeDeformer = newCubeDeformer()
+	}
+	seconds := g.pos * 3
+	extraScale, extraOffsetY, twistFactor := 1.0, 0.0, 0.0
 	switch g.rotationMode {
 	case rotationModePulsate:
-		// Pulsing zoom effect
-		extraScale = 1.0 + 0.2*math.Sin(g.pulsePhase)
+		extraScale = 1 + .2*math.Sin(g.pulsePhase)
 	case rotationModeBounce:
-		// Vertical offset for bounce (limited)
-		extraOffsetY = g.bouncePosition * 50 // Reduced from 100 to 50
+		extraOffsetY = g.bouncePosition * 50
 	case rotationModeTumble:
-		// Twist effect
-		twistFactor = math.Sin(g.rotationTimer*0.01) * 0.5
+		twistFactor = math.Sin(g.rotationTimer*.01) * .5
 	}
-
-	// Pre-calculate sin/cos for rotation
-	sinX, cosX := math.Sincos(g.rotation.X)
-	sinY, cosY := math.Sincos(g.rotation.Y)
-	sinZ, cosZ := math.Sincos(g.rotation.Z)
-
-	// Pre-calculate common animation values
-	squashFactor := 1.0 + 0.15*math.Sin(time*2.0)
-	stretchFactor := 1.0 + 0.15*math.Cos(time*2.0)
-	sinTime25, cosTime25 := math.Sincos(time * 2.5)
-	secondaryBounce := sinTime25 + 0.5*math.Sin(time*5.0)
-	secondaryOffsetY := cosTime25*8.0 + extraOffsetY
-	secondaryOffsetZ := math.Sin(time*3.7) * 4.0
+	squash, stretch := 1+.15*math.Sin(seconds*2), 1+.15*math.Cos(seconds*2)
+	sinTime25, cosTime25 := math.Sincos(seconds * 2.5)
+	secondaryBounce := sinTime25 + .5*math.Sin(seconds*5)
 	deformScale := 1.0
 	if g.rotationMode == rotationModePulsate {
-		deformScale += 0.3 * math.Sin(g.pulsePhase*2)
+		deformScale += .3 * math.Sin(g.pulsePhase*2)
 	}
+	// These stages and values are validated at construction; indices are fixed.
+	_ = g.cubeDeformer.SetVector(0, Vector3{extraScale, extraScale, extraScale})
+	_ = g.cubeDeformer.SetWobbleAmount(2, 25*deformScale)
+	_ = g.cubeDeformer.SetVector(3, Vector3{squash, stretch, 1 / (squash*stretch*.5 + .5)})
+	_ = g.cubeDeformer.SetTwistAmount(5, twistFactor)
+	_ = g.cubeDeformer.SetVector(6, g.rotation)
+	_ = g.cubeDeformer.SetVector(7, Vector3{secondaryBounce * 8, cosTime25*8 + extraOffsetY, math.Sin(seconds*3.7) * 4})
+	g.cubeDeformer.Apply(dst, g.vertices, seconds)
+}
 
-	// Apply transformations to each vertex
-	for i, vertex := range g.vertices {
-		x, y, z := vertex.X, vertex.Y, vertex.Z
-
-		// Apply extra scale
-		x *= extraScale
-		y *= extraScale
-		z *= extraScale
-
-		// Calculate jelly deformation (existing code)
-		positionKey := vertex.X*0.01 + vertex.Y*0.02 + vertex.Z*0.03
-		deformAmount := 25.0 * deformScale
-
-		// Multiple wobble frequencies for complex motion
-		wobbleX := math.Sin(time+positionKey*5.0) * deformAmount * 0.4
-		wobbleX += math.Sin(time*2.1+positionKey*3.0) * deformAmount * 0.2
-
-		wobbleY := math.Cos(time*1.3+positionKey*7.0) * deformAmount * 0.4
-		wobbleY += math.Cos(time*1.7+positionKey*4.0) * deformAmount * 0.2
-
-		wobbleZ := math.Sin(time*0.7+positionKey*3.0) * deformAmount * 0.3
-		wobbleZ += math.Cos(time*1.9+positionKey*6.0) * deformAmount * 0.15
-
-		// Apply deformation based on distance from center
-		distFromCenter := math.Sqrt(x*x+y*y+z*z) / 80.0
-		wobbleInfluence := 0.5 + distFromCenter*0.5
-
-		x += wobbleX * wobbleInfluence
-		y += wobbleY * wobbleInfluence
-		z += wobbleZ * wobbleInfluence
-
-		// Squash and stretch effect
-		x *= squashFactor
-		y *= stretchFactor
-		z *= 1.0 / (squashFactor*stretchFactor*0.5 + 0.5)
-
-		// Add ripple effect
-		ripple := math.Sin(time*4.0+distFromCenter*10.0) * 5.0
-		x += ripple * (vertex.Y / 80.0)
-		y += ripple * (vertex.X / 80.0)
-
-		// Add twist effect if applicable
-		if twistFactor != 0 {
-			angle := twistFactor * (vertex.Y / 80.0)
-			sinAngle, cosAngle := math.Sincos(angle)
-			newX := x*cosAngle - z*sinAngle
-			newZ := x*sinAngle + z*cosAngle
-			x, z = newX, newZ
-		}
-
-		// Rotate around X axis
-		newY := y*cosX - z*sinX
-		newZ := y*sinX + z*cosX
-		y, z = newY, newZ
-
-		// Rotate around Y axis
-		newX := x*cosY + z*sinY
-		newZ = -x*sinY + z*cosY
-		x, z = newX, newZ
-
-		// Rotate around Z axis
-		newX = x*cosZ - y*sinZ
-		newY = x*sinZ + y*cosZ
-
-		// Add secondary wobble
-		newX += secondaryBounce * 8.0
-		newY += secondaryOffsetY
-		newZ += secondaryOffsetZ
-
-		dst[i] = Vector3{X: newX, Y: newY, Z: newZ}
+func newCubeDeformer() *geometry.DeformProgram {
+	p, err := geometry.NewDeformProgram([]geometry.DeformStage{
+		{Kind: geometry.DeformScale, Vector: Vector3{1, 1, 1}},
+		{Kind: geometry.DeformReference},
+		{Kind: geometry.DeformWobble, Wobble: geometry.WobbleField{
+			Key: Vector3{.01, .02, .03}, Amount: 25, Radius: 80, BaseInfluence: .5, RadialInfluence: .5,
+			X: []geometry.Harmonic{{Gain: .4, Speed: 1, Spatial: 5}, {Gain: .2, Speed: 2.1, Spatial: 3}},
+			Y: []geometry.Harmonic{{Gain: .4, Speed: 1.3, Spatial: 7, Cosine: true}, {Gain: .2, Speed: 1.7, Spatial: 4, Cosine: true}},
+			Z: []geometry.Harmonic{{Gain: .3, Speed: .7, Spatial: 3}, {Gain: .15, Speed: 1.9, Spatial: 6, Cosine: true}},
+		}},
+		{Kind: geometry.DeformScale, Vector: Vector3{1, 1, 1}},
+		{Kind: geometry.DeformRipple, Ripple: geometry.RippleField{Amplitude: 5, Speed: 4, Spatial: 10, Radius: 80, CoordinateScale: 80, DirectionX: Vector3{Y: 1}, DirectionY: Vector3{X: 1}}},
+		{Kind: geometry.DeformTwist, Twist: geometry.TwistField{Axis: 1, Radius: 80}},
+		{Kind: geometry.DeformRotate},
+		{Kind: geometry.DeformTranslate},
+	})
+	if err != nil {
+		panic(err)
 	}
-
+	return p
 }
 
 func (g *Game) draw3DCube() {
 	g.sampleCube(g.transformedVertices)
+	g.drawCubeVertices()
+}
+
+func (g *Game) drawCubeVertices() {
 	// Calculate face depths
 	for i, face := range g.faces {
 		// Calculate average Z depth
