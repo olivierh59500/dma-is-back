@@ -1,27 +1,25 @@
 // Package dmaisback implements the DMA is Back demo for desktop and mobile.
 package dmaisback
 
-import originalassets "dma-is-back"
-
 import (
 	"bytes"
+	originalassets "dma-is-back"
+	"image"
+	"image/color"
+
 	"github.com/olivierh59500/democonstructionkit/composite"
 	"github.com/olivierh59500/democonstructionkit/geometry"
 	"github.com/olivierh59500/democonstructionkit/presets"
-
-	"fmt"
 	"github.com/olivierh59500/democonstructionkit/scrolling"
-	"image"
-	"image/color"
+	"github.com/olivierh59500/democonstructionkit/sound"
+
 	_ "image/png"
-	"io"
 	"log"
 	"math"
-	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
+
 	audio "github.com/olivierh59500/democonstructionkit/sound/output"
-	"github.com/olivierh59500/ym-player/pkg/stsound"
 )
 
 const (
@@ -122,194 +120,6 @@ type faceWithDepth struct {
 	depth float64
 }
 
-// YMPlayer wraps the YM player for use with Ebiten's audio system
-type YMPlayer struct {
-	player       *stsound.StSound
-	buffer       []int16
-	mutex        sync.Mutex
-	position     int64
-	totalSamples int64
-	loop         bool
-}
-
-type ymFloat32Reader struct {
-	player *YMPlayer
-}
-
-func (r *ymFloat32Reader) Read(p []byte) (int, error) {
-	return r.player.readFloat32(p)
-}
-
-// NewYMPlayer creates a new YM player instance
-func NewYMPlayer(data []byte, sampleRate int, loop bool) (*YMPlayer, error) {
-	// Create YM player with specified sample rate
-	player := stsound.CreateWithRate(sampleRate)
-
-	// Load YM data from memory
-	if err := player.LoadMemory(data); err != nil {
-		player.Destroy()
-		return nil, fmt.Errorf("failed to load YM data: %w", err)
-	}
-
-	// Enable looping if requested
-	player.SetLoopMode(loop)
-
-	// Get music info for duration calculation
-	info := player.GetInfo()
-	totalSamples := int64(info.MusicTimeInMs) * int64(sampleRate) / 1000
-
-	return &YMPlayer{
-		player:       player,
-		buffer:       make([]int16, 4096), // Audio buffer size
-		totalSamples: totalSamples,
-		loop:         loop,
-	}, nil
-}
-
-// Read implements io.Reader for audio streaming
-func (y *YMPlayer) Read(p []byte) (n int, err error) {
-	y.mutex.Lock()
-	defer y.mutex.Unlock()
-	if y.player == nil {
-		return 0, io.EOF
-	}
-
-	// Calculate how many samples we need (2 bytes per sample, stereo)
-	samplesNeeded := len(p) / 4
-	if samplesNeeded == 0 {
-		return 0, nil
-	}
-
-	// Process audio in chunks
-	processed := 0
-	for processed < samplesNeeded {
-		// Calculate chunk size
-		chunkSize := samplesNeeded - processed
-		if chunkSize > len(y.buffer) {
-			chunkSize = len(y.buffer)
-		}
-
-		// Generate audio samples from YM player
-		if !y.player.Compute(y.buffer[:chunkSize], chunkSize) {
-			if !y.loop {
-				// End of music, fill with silence
-				clear(p[processed*4 : samplesNeeded*4])
-				err = io.EOF
-				break
-			}
-			// Loop enabled, music will restart automatically
-		}
-
-		// Convert mono to stereo. Volume is handled by audio.Player.
-		for i := 0; i < chunkSize; i++ {
-			sample := y.buffer[i]
-			offset := (processed + i) * 4
-			p[offset] = byte(sample)
-			p[offset+1] = byte(sample >> 8)
-			p[offset+2] = byte(sample)
-			p[offset+3] = byte(sample >> 8)
-		}
-
-		processed += chunkSize
-		y.position += int64(chunkSize)
-	}
-
-	return samplesNeeded * 4, err
-}
-
-// readFloat32 streams the YM output in Ebitengine's native float32 format.
-// The mono sample is converted once and then copied to both stereo channels.
-func (y *YMPlayer) readFloat32(p []byte) (n int, err error) {
-	y.mutex.Lock()
-	defer y.mutex.Unlock()
-	if y.player == nil {
-		return 0, io.EOF
-	}
-
-	framesNeeded := len(p) / 8
-	if framesNeeded == 0 {
-		return 0, nil
-	}
-
-	processed := 0
-	for processed < framesNeeded {
-		chunkSize := min(framesNeeded-processed, len(y.buffer))
-		if !y.player.Compute(y.buffer[:chunkSize], chunkSize) && !y.loop {
-			clear(p[processed*8 : framesNeeded*8])
-			err = io.EOF
-			break
-		}
-
-		for i := 0; i < chunkSize; i++ {
-			sample := math.Float32bits(float32(y.buffer[i]) / (1 << 15))
-			offset := (processed + i) * 8
-			p[offset] = byte(sample)
-			p[offset+1] = byte(sample >> 8)
-			p[offset+2] = byte(sample >> 16)
-			p[offset+3] = byte(sample >> 24)
-			p[offset+4] = byte(sample)
-			p[offset+5] = byte(sample >> 8)
-			p[offset+6] = byte(sample >> 16)
-			p[offset+7] = byte(sample >> 24)
-		}
-
-		processed += chunkSize
-		y.position += int64(chunkSize)
-	}
-
-	return framesNeeded * 8, err
-}
-
-// Seek implements io.Seeker for positioning in the audio stream
-func (y *YMPlayer) Seek(offset int64, whence int) (int64, error) {
-	y.mutex.Lock()
-	defer y.mutex.Unlock()
-
-	var newPos int64
-	switch whence {
-	case io.SeekStart:
-		newPos = offset
-	case io.SeekCurrent:
-		newPos = y.position + offset
-	case io.SeekEnd:
-		newPos = y.totalSamples + offset
-	default:
-		return 0, fmt.Errorf("invalid whence: %d", whence)
-	}
-
-	// Clamp position to valid range
-	if newPos < 0 {
-		newPos = 0
-	}
-	if newPos > y.totalSamples {
-		newPos = y.totalSamples
-	}
-
-	// Note: The ym-player library doesn't support seeking, so we just update our position
-	// The player will continue from where it is, which is fine for our use case
-	// since we're using it with infinite loop enabled
-	y.position = newPos
-
-	return newPos, nil
-}
-
-// Close releases resources used by the YM player
-func (y *YMPlayer) Close() error {
-	y.mutex.Lock()
-	defer y.mutex.Unlock()
-
-	if y.player != nil {
-		y.player.Destroy()
-		y.player = nil
-	}
-	return nil
-}
-
-// Length returns the total length of the music in samples
-func (y *YMPlayer) Length() int64 {
-	return y.totalSamples
-}
-
 // CRT shader source - simulates old CRT monitor effects
 const crtShaderSrc = `
 package main
@@ -395,7 +205,7 @@ type Game struct {
 	// Audio
 	audioContext *audio.Context
 	audioPlayer  *audio.Player
-	ymPlayer     *YMPlayer
+	musicStream  *sound.Stream
 	audioReady   bool
 	musicStarted bool
 
@@ -923,24 +733,24 @@ func (g *Game) loadImages() {
 	}
 }
 
-// initAudio initializes the audio system with YM music
+// initAudio opens the soundtrack and starts audio output.
 func (g *Game) initAudio() {
 	g.audioContext = audio.NewContext(audioSampleRate)
 
-	// Create YM player
+	// Let DCK choose and configure the music decoder.
 	var err error
-	g.ymPlayer, err = NewYMPlayer(musicData, audioSampleRate, true)
+	g.musicStream, err = sound.Open("music.ym", musicData, sound.Options{SampleRate: audioSampleRate, Loop: true, PCMFormat: sound.Float32, Gain: 1})
 	if err != nil {
-		log.Printf("Failed to create YM player: %v", err)
+		log.Printf("Failed to open music: %v", err)
 		return
 	}
 
-	// Create audio player from YM player
-	g.audioPlayer, err = g.audioContext.NewPlayerF32(&ymFloat32Reader{player: g.ymPlayer})
+	// Connect the shared stream to audio output.
+	g.audioPlayer, err = g.audioContext.NewPlayerF32(g.musicStream)
 	if err != nil {
 		log.Printf("Failed to create audio player: %v", err)
-		g.ymPlayer.Close()
-		g.ymPlayer = nil
+		g.musicStream.Close()
+		g.musicStream = nil
 		return
 	}
 
@@ -1372,8 +1182,8 @@ func (g *Game) Cleanup() {
 	if g.audioPlayer != nil {
 		g.audioPlayer.Close()
 	}
-	if g.ymPlayer != nil {
-		g.ymPlayer.Close()
+	if g.musicStream != nil {
+		g.musicStream.Close()
 	}
 	if g.crtShader != nil {
 		g.crtShader.Deallocate()

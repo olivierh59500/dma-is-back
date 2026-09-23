@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 
+	"github.com/olivierh59500/democonstructionkit/sound"
+
 	"github.com/hajimehoshi/ebiten/v2"
 )
 
@@ -94,14 +96,14 @@ func TestAppendScrollQuad(t *testing.T) {
 	}
 }
 
-func TestYMFloat32ReaderMatchesInt16(t *testing.T) {
+func TestMusicFloat32ReaderMatchesInt16(t *testing.T) {
 	const frames = 256
-	intPlayer, err := NewYMPlayer(musicData, audioSampleRate, true)
+	intPlayer, err := sound.Open("music.ym", musicData, sound.Options{SampleRate: audioSampleRate, Loop: true, PCMFormat: sound.PCM16, Gain: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer intPlayer.Close()
-	floatPlayer, err := NewYMPlayer(musicData, audioSampleRate, true)
+	floatPlayer, err := sound.Open("music.ym", musicData, sound.Options{SampleRate: audioSampleRate, Loop: true, PCMFormat: sound.Float32, Gain: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +114,7 @@ func TestYMFloat32ReaderMatchesInt16(t *testing.T) {
 	if n, err := intPlayer.Read(intData); err != nil || n != len(intData) {
 		t.Fatalf("int16 read = (%d, %v), want (%d, nil)", n, err, len(intData))
 	}
-	if n, err := floatPlayer.readFloat32(floatData); err != nil || n != len(floatData) {
+	if n, err := floatPlayer.Read(floatData); err != nil || n != len(floatData) {
 		t.Fatalf("float32 read = (%d, %v), want (%d, nil)", n, err, len(floatData))
 	}
 
