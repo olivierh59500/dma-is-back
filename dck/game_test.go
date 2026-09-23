@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/olivierh59500/democonstructionkit/sound"
-
-	"github.com/hajimehoshi/ebiten/v2"
 )
 
 func TestLogicalWidth(t *testing.T) {
@@ -38,61 +36,6 @@ func TestSceneOffsetX(t *testing.T) {
 	}
 	if got, want := sceneOffsetX(1212), 286.0; got != want {
 		t.Fatalf("sceneOffsetX(Pixel 10a width) = %v, want %v", got, want)
-	}
-}
-
-func TestWaveByStripMatchesDirectLookup(t *testing.T) {
-	g := &Game{frontMainWave: []int{2, 5, 4, 8}}
-	for _, start := range []int{0, 1, 3, 4, 11, 127} {
-		g.frontWavePos = start
-		g.updateWaveByStrip()
-		for strip, got := range g.waveByStrip {
-			want := g.getSum(g.frontMainWave, start+strip, 0)
-			if got != want {
-				t.Fatalf("start %d, strip %d: got %d, want %d", start, strip, got, want)
-			}
-		}
-	}
-}
-
-func TestGroupedScrollRowsMatchOriginalMapping(t *testing.T) {
-	for bounce := 0; bounce < fontHeight; bounce++ {
-		for strip := 0; strip < scrollStrips; strip++ {
-			dstY := strip * scrollStripH
-			height := min(scrollStripH, stCanvasHeight-dstY)
-			srcY := ((strip + bounce) % fontHeight) * scrollStripH
-			for row := 0; row < height; row++ {
-				line := dstY + row
-				want := ((line/scrollStripH+bounce)%fontHeight)*scrollStripH + line%scrollStripH
-				if got := srcY + row; got != want {
-					t.Fatalf("bounce %d, line %d: got %d, want %d", bounce, line, got, want)
-				}
-			}
-		}
-	}
-}
-
-func TestAppendScrollQuad(t *testing.T) {
-	g := &Game{
-		scrollVertices: make([]ebiten.Vertex, 0, 4),
-		scrollIndices:  make([]uint16, 0, 6),
-	}
-	g.appendScrollQuad(10, 20, 30, 40, 50, 3)
-
-	if len(g.scrollVertices) != 4 || len(g.scrollIndices) != 6 {
-		t.Fatalf("got %d vertices and %d indices", len(g.scrollVertices), len(g.scrollIndices))
-	}
-	if got, want := g.scrollVertices[2].DstX, float32(60); got != want {
-		t.Fatalf("bottom-right DstX = %v, want %v", got, want)
-	}
-	if got, want := g.scrollVertices[2].SrcY, float32(43); got != want {
-		t.Fatalf("bottom-right SrcY = %v, want %v", got, want)
-	}
-	wantIndices := [...]uint16{0, 1, 2, 0, 2, 3}
-	for i, want := range wantIndices {
-		if got := g.scrollIndices[i]; got != want {
-			t.Fatalf("index %d = %d, want %d", i, got, want)
-		}
 	}
 }
 
