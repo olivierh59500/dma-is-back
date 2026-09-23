@@ -7,8 +7,9 @@ import (
 	"image"
 	"image/color"
 
+	kit "github.com/olivierh59500/democonstructionkit"
 	"github.com/olivierh59500/democonstructionkit/composite"
-	"github.com/olivierh59500/democonstructionkit/geometry"
+	"github.com/olivierh59500/democonstructionkit/effects"
 	"github.com/olivierh59500/democonstructionkit/presets"
 	"github.com/olivierh59500/democonstructionkit/scrolling"
 	"github.com/olivierh59500/democonstructionkit/sound"
@@ -42,8 +43,6 @@ const (
 	// Animation parameters
 	fadeSpeed       = 0.03 // Doubled from 0.01 for faster transitions
 	scrollSpeed     = 8
-	rotationSpeed   = 0.05
-	zoomSpeed       = 0.01
 	posSpeed        = 0.014
 	audioSampleRate = 48000
 
@@ -67,22 +66,8 @@ const (
 	cdSplitted
 )
 
-const (
-	// Cube rotation modes
-	rotationModeNormal = iota
-	rotationModeTumble
-	rotationModePulsate
-	rotationModeSwing
-	rotationModeBounce
-	rotationModeTotal // Total number of modes
-)
-
-// Color definitions for 3D cube faces
+// Canvas background colors.
 var (
-	col0 = color.RGBA{0xE0, 0xA0, 0xC0, 0xFF}
-	col1 = color.RGBA{0xE0, 0x60, 0xC0, 0xFF}
-	col2 = color.RGBA{0xE0, 0xE0, 0xE0, 0xFF}
-
 	blackFill      color.Color = color.Black
 	mainScrollFill color.Color = color.RGBA{0x00, 0x00, 0x60, 0xFF}
 )
@@ -98,27 +83,6 @@ var (
 		// Letter represents a character in the bitmap font
 		DCKAssetMusicData()
 )
-
-type Letter struct {
-	x, y  int
-	width int
-	image *ebiten.Image
-}
-
-// Vector3 represents a 3D point in space
-type Vector3 = geometry.Vec3
-
-// Face represents a quad face with 4 vertices and a color
-type Face struct {
-	P1, P2, P3, P4 int
-	Color          color.RGBA
-}
-
-// faceWithDepth is used for depth sorting
-type faceWithDepth struct {
-	face  Face
-	depth float64
-}
 
 // CRT shader source - simulates old CRT monitor effects
 const crtShaderSrc = `
@@ -167,18 +131,11 @@ func Fragment(position vec4, texCoord vec2, color vec4) vec4 {
 
 // Game represents the main demo state
 type Game struct {
-	smoothCubeTransitions      bool
-	cubeHandoff                geometry.Handoff
-	cubeDeformer               *geometry.DeformProgram
-	cubePrevious, cubeIncoming []Vector3
-	cubeTick                   int
-	cubeChanged                bool
-	swingOriginX, swingOriginZ float64
-	scrollRenderer             *scrolling.Scrolling
+	cube           *effects.JellyCube
+	scrollRenderer *scrolling.Scrolling
 	// Images
-	backImg  *ebiten.Image
-	fontImg  *ebiten.Image
-	whiteImg *ebiten.Image
+	backImg *ebiten.Image
+	fontImg *ebiten.Image
 
 	// Canvases for different rendering layers
 	stCanvas       *ebiten.Image // Main ST screen canvas
@@ -189,18 +146,8 @@ type Game struct {
 	introViewport2 *ebiten.Image // Visible part of surfScroll2
 
 	// Animation state
-	fadeImg  float64 // Fade alpha value
-	pos      float64 // General position counter
-	zoom3d   float64 // 3D cube zoom factor
-	rotation Vector3 // 3D cube rotation angles
-
-	// 3D cube data
-	vertices            []Vector3
-	faces               []Face
-	transformedVertices []Vector3       // Pre-allocated for optimization
-	facesWithDepth      []faceWithDepth // Pre-allocated for optimization
-	cubeVertices        []ebiten.Vertex
-	cubeIndices         []uint16
+	fadeImg float64 // Fade alpha value
+	pos     float64 // General position counter
 
 	// Audio
 	audioContext *audio.Context
@@ -216,7 +163,7 @@ type Game struct {
 	crtShader *ebiten.Shader
 
 	// Font data
-	letterData map[rune]*Letter
+	fontAtlas *scrolling.Atlas
 
 	// Intro scrolling state
 	introX      int
@@ -243,73 +190,28 @@ type Game struct {
 	drawRectOp    *ebiten.DrawRectShaderOptions
 	lastLetterNum int // Track last rendered letter number for caching
 
-	// New fields for cube movements
-	rotationMode     int     // Current rotation mode
-	rotationTimer    float64 // Timer to change mode
-	rotationDuration float64 // Duration of each mode
-	pulsePhase       float64 // Phase for pulsation effect
-	swingAmplitude   float64 // Swing amplitude
-	bounceVelocity   float64 // Bounce velocity
-	bouncePosition   float64 // Bounce position
 }
 
 // NewGame creates and initializes a new game instance
 func NewGame() *Game {
 	g := &Game{
-		smoothCubeTransitions: true,
-		fadeImg:               2.0,
-		zoom3d:                0.0,
-		letterData:            make(map[rune]*Letter),
-		introX:                -1,
-		introLetter:           -1,
-		introTile:             -1,
-		introSpeed:            scrollSpeed,
-		drawOp:                &ebiten.DrawImageOptions{},
-		drawRectOp:            &ebiten.DrawRectShaderOptions{},
-		lastLetterNum:         -1,
-
-		// New fields
-		rotationMode:     rotationModeNormal,
-		rotationTimer:    0,
-		rotationDuration: 300, // Change mode every 300 frames (~5 seconds)
-		pulsePhase:       0,
-		swingAmplitude:   1.0,
-		bounceVelocity:   0,
-		bouncePosition:   0,
+		fadeImg:       2.0,
+		introX:        -1,
+		introLetter:   -1,
+		introTile:     -1,
+		introSpeed:    scrollSpeed,
+		drawOp:        &ebiten.DrawImageOptions{},
+		drawRectOp:    &ebiten.DrawRectShaderOptions{},
+		lastLetterNum: -1,
 	}
 
-	// Initialize 3D cube vertices - perfect cube with equal dimensions
-	size := 80.0
-	g.vertices = []Vector3{
-		{-size, -size, -size}, // 0 - back bottom left
-		{size, -size, -size},  // 1 - back bottom right
-		{size, size, -size},   // 2 - back top right
-		{-size, size, -size},  // 3 - back top left
-		{-size, -size, size},  // 4 - front bottom left
-		{size, -size, size},   // 5 - front bottom right
-		{size, size, size},    // 6 - front top right
-		{-size, size, size},   // 7 - front top left
+	var err error
+	g.cube, err = effects.NewJellyCube(effects.DMAJellyCubeConfig())
+	if err != nil {
+		panic(err)
 	}
-
-	// Initialize cube faces with proper winding order
-	g.faces = []Face{
-		{4, 5, 6, 7, col0}, // Front face
-		{1, 0, 3, 2, col0}, // Back face
-		{5, 1, 2, 6, col1}, // Right face
-		{0, 4, 7, 3, col1}, // Left face
-		{7, 6, 2, 3, col2}, // Top face
-		{0, 1, 5, 4, col2}, // Bottom face
-	}
-
-	// Pre-allocate transformation buffers
-	g.transformedVertices = make([]Vector3, len(g.vertices))
-	g.facesWithDepth = make([]faceWithDepth, len(g.faces))
-	g.cubeVertices = make([]ebiten.Vertex, 0, len(g.faces)*4)
-	g.cubeIndices = make([]uint16, 0, len(g.faces)*6)
 	g.scrollVertices = make([]ebiten.Vertex, 0, scrollStrips*8)
 	g.scrollIndices = make([]uint16, 0, scrollStrips*12)
-	g.whiteImg = ebiten.NewImage(1, 1)
-	g.whiteImg.Fill(color.White)
 
 	// Initialize scrolling texts
 	spc := "     "
@@ -333,8 +235,11 @@ func NewGame() *Game {
 	g.introViewport1 = g.surfScroll1.SubImage(viewport).(*ebiten.Image)
 	g.introViewport2 = g.surfScroll2.SubImage(viewport).(*ebiten.Image)
 
-	// Initialize font data
-	g.initFontData()
+	// Load the shared proportional atlas recipe.
+	g.fontAtlas, err = presets.FontAtlas("dma-is-back", g.fontImg)
+	if err != nil {
+		panic(err)
+	}
 
 	// Initialize wave curves for distortion effects
 	g.curves = make([][]int, 8)
@@ -346,7 +251,6 @@ func NewGame() *Game {
 	g.curves = nil
 
 	// Compile CRT shader
-	var err error
 	g.crtShader, err = ebiten.NewShader([]byte(crtShaderSrc))
 	if err != nil {
 		log.Printf("Failed to compile CRT shader: %v", err)
@@ -365,8 +269,8 @@ func (g *Game) displayText(letterOffset int) {
 	if g.scrollRenderer == nil {
 		glyphs := make([]scrolling.Glyph, len(g.scrollTextRunes))
 		for i, r := range g.scrollTextRunes {
-			if letter, ok := g.letterData[r]; ok {
-				glyphs[i] = scrolling.Glyph{Image: letter.image, Advance: float64(letter.width)}
+			if glyphImage, letter, ok := g.fontAtlas.ExactGlyph(r); ok {
+				glyphs[i] = scrolling.Glyph{Image: glyphImage, Advance: float64(int(letter.Advance))}
 			}
 		}
 		var err error
@@ -384,79 +288,6 @@ func (g *Game) displayText(letterOffset int) {
 	g.scrollRenderer.DrawAt(g.surfScroll, state)
 }
 
-// initFontData initializes the bitmap font character data
-func (g *Game) initFontData() {
-	// Font character definitions - position and width in the font bitmap
-	data := []struct {
-		char  rune
-		x, y  int
-		width int
-	}{
-		{' ', 0, 0, 32},
-		{'!', 48, 0, 16},
-		{'"', 96, 0, 32},
-		{'\'', 336, 0, 16},
-		{'(', 384, 0, 32},
-		{')', 432, 0, 32},
-		{'+', 48, 36, 48},
-		{',', 96, 36, 16},
-		{'-', 144, 36, 32},
-		{'.', 192, 36, 16},
-		{'0', 288, 36, 48},
-		{'1', 336, 36, 48},
-		{'2', 384, 36, 48},
-		{'3', 432, 36, 48},
-		{'4', 0, 72, 48},
-		{'5', 48, 72, 48},
-		{'6', 96, 72, 48},
-		{'7', 144, 72, 48},
-		{'8', 192, 72, 48},
-		{'9', 240, 72, 48},
-		{':', 288, 72, 16},
-		{';', 336, 72, 16},
-		{'<', 384, 72, 32},
-		{'=', 432, 72, 32},
-		{'>', 0, 108, 32},
-		{'?', 48, 108, 48},
-		{'A', 144, 108, 48},
-		{'B', 192, 108, 48},
-		{'C', 240, 108, 48},
-		{'D', 288, 108, 48},
-		{'E', 336, 108, 48},
-		{'F', 384, 108, 48},
-		{'G', 432, 108, 48},
-		{'H', 0, 144, 48},
-		{'I', 48, 144, 16},
-		{'J', 96, 144, 48},
-		{'K', 144, 144, 48},
-		{'L', 192, 144, 48},
-		{'M', 240, 144, 48},
-		{'N', 288, 144, 48},
-		{'O', 336, 144, 48},
-		{'P', 384, 144, 48},
-		{'Q', 432, 144, 48},
-		{'R', 0, 180, 48},
-		{'S', 48, 180, 48},
-		{'T', 96, 180, 48},
-		{'U', 144, 180, 48},
-		{'V', 192, 180, 48},
-		{'W', 240, 180, 48},
-		{'X', 288, 180, 48},
-		{'Y', 336, 180, 48},
-		{'Z', 384, 180, 48},
-	}
-
-	// Build character lookup map
-	for _, d := range data {
-		g.letterData[d.char] = &Letter{
-			x:     d.x,
-			y:     d.y,
-			width: d.width,
-			image: g.fontImg.SubImage(image.Rect(d.x, d.y, d.x+d.width, d.y+fontHeight)).(*ebiten.Image),
-		}
-	}
-}
-
 // createCurves generates the wave curves for distortion effects
 func (g *Game) createCurves() {
 	curves, err := presets.RibbonCurves(1)
@@ -471,8 +302,8 @@ func (g *Game) precalcPosition() {
 	g.position = make([]int, 0, len(g.scrollTextRunes))
 
 	for _, r := range g.scrollTextRunes {
-		if letter, ok := g.letterData[r]; ok {
-			count += int(float64(letter.width) * demoFontScale)
+		if _, letter, ok := g.fontAtlas.ExactGlyph(r); ok {
+			count += int(float64(int(letter.Advance)) * demoFontScale)
 			g.position = append(g.position, count)
 		}
 	}
@@ -532,8 +363,8 @@ func (g *Game) animIntro() {
 	if g.introX < 0 {
 		if g.introTile > -1 {
 			char := g.getIntroLetter(g.introTile)
-			if letter, ok := g.letterData[char]; ok {
-				g.introX += int(float64(letter.width) * introFontScale)
+			if _, letter, ok := g.fontAtlas.ExactGlyph(char); ok {
+				g.introX += int(float64(int(letter.Advance)) * introFontScale)
 			}
 		}
 		g.introLetter++
@@ -558,11 +389,11 @@ func (g *Game) animIntro() {
 
 	// Draw new letter
 	char := g.getIntroLetter(g.introTile)
-	if letter, ok := g.letterData[char]; ok {
+	if glyphImage, _, ok := g.fontAtlas.ExactGlyph(char); ok {
 		g.drawOp.GeoM.Reset()
 		g.drawOp.GeoM.Scale(introFontScale, introFontScale)
 		g.drawOp.GeoM.Translate(float64(stCanvasWidth+g.introX), 0)
-		g.surfScroll2.DrawImage(letter.image, g.drawOp)
+		g.surfScroll2.DrawImage(glyphImage, g.drawOp)
 	}
 
 	g.surfScroll1, g.surfScroll2 = g.surfScroll2, g.surfScroll1
@@ -760,12 +591,6 @@ func (g *Game) initAudio() {
 
 // Update updates the game state
 func (g *Game) Update() error {
-	if len(g.cubePrevious) != len(g.vertices) {
-		g.cubePrevious = make([]Vector3, len(g.vertices))
-		g.cubeIncoming = make([]Vector3, len(g.vertices))
-	}
-	g.sampleCube(g.cubePrevious)
-	g.cubeChanged = false
 	if !g.audioReady {
 		// The Android activity installs the gomobile context and Ebiten view
 		// before the first update. Opening the audio device here avoids doing
@@ -800,99 +625,7 @@ func (g *Game) Update() error {
 		// Update background animation
 		g.pos += posSpeed
 
-		// Update 3D cube after delay
-		if g.scrollIteration > 25 {
-			// Handle rotation mode changes
-			g.rotationTimer++
-			if g.rotationTimer >= g.rotationDuration {
-				g.rotationTimer = 0
-				// Smooth transition between modes
-				g.rotationMode = (g.rotationMode + 1) % rotationModeTotal
-				g.cubeChanged = true
-
-				// Reset parameters based on new mode
-				switch g.rotationMode {
-				case rotationModeBounce:
-					g.bounceVelocity = 0.08
-					g.bouncePosition = 0
-				case rotationModeSwing:
-					// Adjust initial rotation to avoid jumps
-					g.swingOriginX = g.rotation.X
-					g.swingOriginZ = g.rotation.Z
-					if !g.smoothCubeTransitions {
-						g.swingOriginX, g.swingOriginZ = 0, 0
-					}
-					g.swingAmplitude = 1.0
-				case rotationModePulsate:
-					// Start pulse phase based on current rotation to avoid jumps
-					g.pulsePhase = math.Atan2(g.rotation.Y, g.rotation.X)
-				case rotationModeNormal:
-					// Continue from current position
-					// No reset needed
-				}
-			}
-
-			// Apply different movements based on mode
-			switch g.rotationMode {
-			case rotationModeNormal:
-				// Standard rotation (existing)
-				g.rotation.X += rotationSpeed
-				g.rotation.Y += rotationSpeed
-				g.rotation.Z -= rotationSpeed
-
-			case rotationModeTumble:
-				// Chaotic rotation with changing speed
-				speedVar := math.Sin(g.rotationTimer * 0.02)
-				g.rotation.X += rotationSpeed * (1 + speedVar)
-				g.rotation.Y += rotationSpeed * (1.5 - speedVar*0.5)
-				g.rotation.Z -= rotationSpeed * (0.5 + speedVar*0.5)
-
-			case rotationModePulsate:
-				// Rotation with pulsation
-				g.pulsePhase += 0.05
-				pulse := 1.0 + 0.3*math.Sin(g.pulsePhase)
-				g.rotation.X += rotationSpeed * pulse
-				g.rotation.Y += rotationSpeed * 0.7 * pulse
-				g.rotation.Z -= rotationSpeed * 0.3
-
-			case rotationModeSwing:
-				// Pendulum swing
-				swing := math.Sin(g.rotationTimer*0.03) * g.swingAmplitude
-				g.rotation.X = g.swingOriginX + swing*0.8
-				g.rotation.Y += rotationSpeed * 0.5
-				g.rotation.Z = g.swingOriginZ + swing*0.4
-				g.swingAmplitude *= 0.998 // Slower damping
-
-			case rotationModeBounce:
-				// Bounce effect
-				g.bounceVelocity -= 0.001 // Reduced gravity
-				g.bouncePosition += g.bounceVelocity
-
-				// Limit descent to stay visible
-				if g.bouncePosition < -0.3 {
-					g.bouncePosition = -0.3
-					g.bounceVelocity = math.Abs(g.bounceVelocity) * 0.85 // Bounce with energy loss
-				}
-
-				g.rotation.X += rotationSpeed * 0.3
-				g.rotation.Y += rotationSpeed * (1 + math.Max(0, g.bouncePosition))
-				g.rotation.Z += rotationSpeed * 0.1
-			}
-
-			// Zoom in 3D cube (existing)
-			if g.zoom3d < 1 {
-				g.zoom3d += zoomSpeed
-				if g.zoom3d > 1 {
-					g.zoom3d = 1
-				}
-			}
-		}
-	}
-
-	g.cubeTick++
-	if g.cubeChanged && g.smoothCubeTransitions {
-		g.sampleRawCube(g.cubeIncoming)
-		if err := g.cubeHandoff.Begin(g.cubePrevious, g.cubeIncoming, float64(g.cubeTick)/60, .75); err != nil {
+		if err := g.cube.Update(kit.Frame{Time: float64(g.scrollIteration) / 60}); err != nil {
 			return err
 		}
 	}
@@ -968,10 +701,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		// Draw animated background logo
 		g.drawAnimatedLogo()
 
-		// Draw 3D jelly cube
-		if g.scrollIteration > 25 {
-			g.draw3DCube()
-		}
+		// The shared effect owns entrance timing, all modes and continuous handoffs.
+		g.cube.Draw(g.stCanvas)
 
 		// Final composite with fade
 		g.drawOp.GeoM.Reset()
@@ -979,175 +710,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawOp.GeoM.Translate(sceneOffsetX(screen.Bounds().Dx()), 70)
 		g.drawOp.ColorScale.ScaleAlpha(float32(g.fadeImg))
 		screen.DrawImage(g.stCanvas, g.drawOp)
-	}
-}
-
-// draw3DCube transforms and draws the jelly cube directly onto the ST canvas.
-// sampleRawCube evaluates an effect without reading or advancing render state.
-func (g *Game) sampleRawCube(dst []Vector3) {
-	if g.cubeDeformer == nil {
-		g.cubeDeformer = newCubeDeformer()
-	}
-	seconds := g.pos * 3
-	extraScale, extraOffsetY, twistFactor := 1.0, 0.0, 0.0
-	switch g.rotationMode {
-	case rotationModePulsate:
-		extraScale = 1 + .2*math.Sin(g.pulsePhase)
-	case rotationModeBounce:
-		extraOffsetY = g.bouncePosition * 50
-	case rotationModeTumble:
-		twistFactor = math.Sin(g.rotationTimer*.01) * .5
-	}
-	squash, stretch := 1+.15*math.Sin(seconds*2), 1+.15*math.Cos(seconds*2)
-	sinTime25, cosTime25 := math.Sincos(seconds * 2.5)
-	secondaryBounce := sinTime25 + .5*math.Sin(seconds*5)
-	deformScale := 1.0
-	if g.rotationMode == rotationModePulsate {
-		deformScale += .3 * math.Sin(g.pulsePhase*2)
-	}
-	// These stages and values are validated at construction; indices are fixed.
-	_ = g.cubeDeformer.SetVector(0, Vector3{extraScale, extraScale, extraScale})
-	_ = g.cubeDeformer.SetWobbleAmount(2, 25*deformScale)
-	_ = g.cubeDeformer.SetVector(3, Vector3{squash, stretch, 1 / (squash*stretch*.5 + .5)})
-	_ = g.cubeDeformer.SetTwistAmount(5, twistFactor)
-	_ = g.cubeDeformer.SetVector(6, g.rotation)
-	_ = g.cubeDeformer.SetVector(7, Vector3{secondaryBounce * 8, cosTime25*8 + extraOffsetY, math.Sin(seconds*3.7) * 4})
-	g.cubeDeformer.Apply(dst, g.vertices, seconds)
-}
-
-func newCubeDeformer() *geometry.DeformProgram {
-	p, err := geometry.NewDeformProgram([]geometry.DeformStage{
-		{Kind: geometry.DeformScale, Vector: Vector3{1, 1, 1}},
-		{Kind: geometry.DeformReference},
-		{Kind: geometry.DeformWobble, Wobble: geometry.WobbleField{
-			Key: Vector3{.01, .02, .03}, Amount: 25, Radius: 80, BaseInfluence: .5, RadialInfluence: .5,
-			X: []geometry.Harmonic{{Gain: .4, Speed: 1, Spatial: 5}, {Gain: .2, Speed: 2.1, Spatial: 3}},
-			Y: []geometry.Harmonic{{Gain: .4, Speed: 1.3, Spatial: 7, Cosine: true}, {Gain: .2, Speed: 1.7, Spatial: 4, Cosine: true}},
-			Z: []geometry.Harmonic{{Gain: .3, Speed: .7, Spatial: 3}, {Gain: .15, Speed: 1.9, Spatial: 6, Cosine: true}},
-		}},
-		{Kind: geometry.DeformScale, Vector: Vector3{1, 1, 1}},
-		{Kind: geometry.DeformRipple, Ripple: geometry.RippleField{Amplitude: 5, Speed: 4, Spatial: 10, Radius: 80, CoordinateScale: 80, DirectionX: Vector3{Y: 1}, DirectionY: Vector3{X: 1}}},
-		{Kind: geometry.DeformTwist, Twist: geometry.TwistField{Axis: 1, Radius: 80}},
-		{Kind: geometry.DeformRotate},
-		{Kind: geometry.DeformTranslate},
-	})
-	if err != nil {
-		panic(err)
-	}
-	return p
-}
-
-func (g *Game) draw3DCube() {
-	g.sampleCube(g.transformedVertices)
-	g.drawCubeVertices()
-}
-
-func (g *Game) drawCubeVertices() {
-	// Calculate face depths
-	for i, face := range g.faces {
-		// Calculate average Z depth
-		avgZ := (g.transformedVertices[face.P1].Z + g.transformedVertices[face.P2].Z +
-			g.transformedVertices[face.P3].Z + g.transformedVertices[face.P4].Z) / 4.0
-		g.facesWithDepth[i].face = face
-		g.facesWithDepth[i].depth = avgZ
-	}
-
-	// Sort the six faces back to front. An insertion sort avoids the reflection
-	// and heap escape caused by sort.Slice in this per-frame hot path.
-	for i := 1; i < len(g.facesWithDepth); i++ {
-		face := g.facesWithDepth[i]
-		j := i
-		for j > 0 && g.facesWithDepth[j-1].depth > face.depth {
-			g.facesWithDepth[j] = g.facesWithDepth[j-1]
-			j--
-		}
-		g.facesWithDepth[j] = face
-	}
-
-	// Draw faces
-	centerX := float32(stCanvasWidth / 2)
-	centerY := float32(stCanvasHeight / 2)
-	g.cubeVertices = g.cubeVertices[:0]
-	g.cubeIndices = g.cubeIndices[:0]
-
-	// High FOV for minimal perspective
-	fov := 2000.0
-
-	for _, f := range g.facesWithDepth {
-		face := f.face
-
-		// Get transformed vertices
-		v0 := g.transformedVertices[face.P1]
-		v1 := g.transformedVertices[face.P2]
-		v2 := g.transformedVertices[face.P3]
-		v3 := g.transformedVertices[face.P4]
-
-		// Project to 2D
-		offset := 300.0
-
-		scale0 := fov / (fov + v0.Z + offset)
-		x0 := centerX + float32(v0.X*scale0)
-		y0 := centerY + float32(v0.Y*scale0)
-
-		scale1 := fov / (fov + v1.Z + offset)
-		x1 := centerX + float32(v1.X*scale1)
-		y1 := centerY + float32(v1.Y*scale1)
-
-		scale2 := fov / (fov + v2.Z + offset)
-		x2 := centerX + float32(v2.X*scale2)
-		y2 := centerY + float32(v2.Y*scale2)
-
-		scale3 := fov / (fov + v3.Z + offset)
-		x3 := centerX + float32(v3.X*scale3)
-		y3 := centerY + float32(v3.Y*scale3)
-
-		// Slight expansion to avoid gaps
-		expansion := float32(0.5)
-
-		// Calculate face center
-		centerFaceX := (x0 + x1 + x2 + x3) / 4.0
-		centerFaceY := (y0 + y1 + y2 + y3) / 4.0
-
-		// Expand vertices slightly
-		x0 += (x0 - centerFaceX) * expansion / 100.0
-		y0 += (y0 - centerFaceY) * expansion / 100.0
-		x1 += (x1 - centerFaceX) * expansion / 100.0
-		y1 += (y1 - centerFaceY) * expansion / 100.0
-		x2 += (x2 - centerFaceX) * expansion / 100.0
-		y2 += (y2 - centerFaceY) * expansion / 100.0
-		x3 += (x3 - centerFaceX) * expansion / 100.0
-		y3 += (y3 - centerFaceY) * expansion / 100.0
-
-		// Apply the former intermediate-canvas zoom directly to the vertices.
-		zoom := float32(g.zoom3d)
-		x0 = centerX + (x0-centerX)*zoom
-		y0 = centerY + (y0-centerY)*zoom
-		x1 = centerX + (x1-centerX)*zoom
-		y1 = centerY + (y1-centerY)*zoom
-		x2 = centerX + (x2-centerX)*zoom
-		y2 = centerY + (y2-centerY)*zoom
-		x3 = centerX + (x3-centerX)*zoom
-		y3 = centerY + (y3-centerY)*zoom
-
-		red := float32(face.Color.R) / 255
-		green := float32(face.Color.G) / 255
-		blue := float32(face.Color.B) / 255
-		alpha := float32(face.Color.A) / 255
-		base := uint16(len(g.cubeVertices))
-		g.cubeVertices = append(g.cubeVertices,
-			ebiten.Vertex{DstX: x0, DstY: y0, SrcX: 0, SrcY: 0, ColorR: red, ColorG: green, ColorB: blue, ColorA: alpha},
-			ebiten.Vertex{DstX: x1, DstY: y1, SrcX: 1, SrcY: 0, ColorR: red, ColorG: green, ColorB: blue, ColorA: alpha},
-			ebiten.Vertex{DstX: x2, DstY: y2, SrcX: 1, SrcY: 1, ColorR: red, ColorG: green, ColorB: blue, ColorA: alpha},
-			ebiten.Vertex{DstX: x3, DstY: y3, SrcX: 0, SrcY: 1, ColorR: red, ColorG: green, ColorB: blue, ColorA: alpha},
-		)
-		g.cubeIndices = append(g.cubeIndices,
-			base, base+1, base+2,
-			base, base+2, base+3,
-		)
-	}
-
-	if len(g.cubeIndices) > 0 {
-		g.stCanvas.DrawTriangles(g.cubeVertices, g.cubeIndices, g.whiteImg, nil)
 	}
 }
 
@@ -1179,6 +741,9 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 
 // Cleanup releases resources when game exits
 func (g *Game) Cleanup() {
+	if g.cube != nil {
+		g.cube.Close()
+	}
 	if g.audioPlayer != nil {
 		g.audioPlayer.Close()
 	}
@@ -1190,14 +755,6 @@ func (g *Game) Cleanup() {
 	}
 }
 
-// sampleCube includes any active handoff without depending on Draw calls.
-func (g *Game) sampleCube(dst []Vector3) {
-	g.sampleRawCube(dst)
-	if g.smoothCubeTransitions {
-		g.cubeHandoff.Apply(dst, dst, float64(g.cubeTick)/60)
-	}
-}
-
 // SetSmoothTransitions selects continuous cube effects or the historical path.
 // Configure this before the first Update; the DCK version enables it by default.
-func (g *Game) SetSmoothTransitions(enabled bool) { g.smoothCubeTransitions = enabled }
+func (g *Game) SetSmoothTransitions(enabled bool) { g.cube.SetSmoothTransitions(enabled) }
