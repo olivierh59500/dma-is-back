@@ -18,6 +18,7 @@ import (
 	"github.com/olivierh59500/democonstructionkit/scrolling"
 	"github.com/olivierh59500/democonstructionkit/sound"
 	audio "github.com/olivierh59500/democonstructionkit/sound/output"
+	"github.com/olivierh59500/democonstructionkit/timeline"
 )
 
 const (
@@ -49,19 +50,23 @@ type Game struct {
 	logoPath                   motion.NestedOrbit
 	crt                        *effects.CRTOverlay
 	backImg, fontImg, stCanvas *ebiten.Image
-	fadeImg, pos               float64
+	pos                        float64
 	scrollIteration            int
-	introComplete              bool
+	handoff                    *timeline.IntroHandoff
 	audioContext               *audio.Context
 	audioPlayer                *audio.Player
 	musicStream                *sound.Stream
-	audioReady, musicStarted   bool
+	audioReady                 bool
 	drawOp                     ebiten.DrawImageOptions
 }
 
 func NewGame() *Game {
-	g := &Game{fadeImg: 2}
+	g := &Game{}
 	var err error
+	g.handoff, err = timeline.NewIntroHandoff(presets.FadedIntroHandoff(fadeSpeed, .1))
+	if err != nil {
+		panic(err)
+	}
 	g.cube, err = effects.NewJellyCube(effects.DMAJellyCubeConfig())
 	if err != nil {
 		panic(err)
@@ -153,26 +158,20 @@ func (g *Game) Update() error {
 		g.audioReady = true
 		g.initAudio()
 	}
-	if !g.introComplete {
+	if !g.handoff.Main() {
 		if err := g.introScroll.Update(kit.Frame{}); err != nil {
 			return err
 		}
-		if g.introScroll.Finished() {
-			g.introComplete = true
-			g.fadeImg = 0
+		g.handoff.Step(g.introScroll.Finished())
+		if g.handoff.JustEntered() {
 			g.scrollIteration = 0
 		}
 		return nil
 	}
-	if g.fadeImg < 1 {
-		g.fadeImg += fadeSpeed
-		if g.fadeImg > 1 {
-			g.fadeImg = 1
-		}
-	}
-	if g.fadeImg > .1 && g.audioPlayer != nil && !g.musicStarted {
+	g.handoff.Step(false)
+	if g.handoff.CueReady() && g.audioPlayer != nil {
 		g.audioPlayer.Play()
-		g.musicStarted = true
+		g.handoff.MarkCue()
 	}
 	g.scrollIteration++
 	g.pos += posSpeed
@@ -195,7 +194,7 @@ func (g *Game) releaseIntroResources() {
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.Black)
-	if !g.introComplete {
+	if !g.handoff.Main() {
 		g.stCanvas.Fill(color.Black)
 		y := float64(stCanvasHeight/2 - g.introScroll.Image().Bounds().Dy()/2)
 		if g.crt != nil {
@@ -221,7 +220,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.drawOp.GeoM.Reset()
 	g.drawOp.ColorScale.Reset()
 	g.drawOp.GeoM.Translate(sceneOffsetX(screen.Bounds().Dx()), 70)
-	g.drawOp.ColorScale.ScaleAlpha(float32(g.fadeImg))
+	g.drawOp.ColorScale.ScaleAlpha(float32(g.handoff.Fade()))
 	screen.DrawImage(g.stCanvas, &g.drawOp)
 }
 
