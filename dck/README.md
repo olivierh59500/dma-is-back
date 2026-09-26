@@ -16,6 +16,16 @@ The main logo uses `motion.TrajectoryClock` to advance and cache its nested
 orbit. Its center, radii, phase step and sampling function can be changed
 without adding a local animation counter. The initial frame and later path
 positions follow the original advance-before-draw order.
+The opt-in GPU capture check runs with audio output disabled:
+
+```sh
+DCK_DMA_CAPTURE_DIR=/path/to/captures go test -tags dck_fidelity_rendercheck -run '^$' ./dck
+```
+
+Seven complete frames (0, 1, 60, 240, 600, 1200 and 2400) were captured from
+the DCK revisions `aaa9946` and `025a53f`. Their decoded RGBA
+pixels match exactly, including the intro-to-main transition and later logo
+motion.
 
 ## Continuous cube effects
 
