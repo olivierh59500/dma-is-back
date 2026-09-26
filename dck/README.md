@@ -12,6 +12,10 @@ provides the configured stereo PCM format. The demo keeps its playback level and
 `timeline.IntroHandoff` now owns the intro completion boundary, main-scene
 fade and music threshold. This screen configures a 0.03 alpha step and starts
 music strictly above 0.1; its image, text and soundtrack remain local data.
+The main logo uses `motion.TrajectoryClock` to advance and cache its nested
+orbit. Its center, radii, phase step and sampling function can be changed
+without adding a local animation counter. The initial frame and later path
+positions follow the original advance-before-draw order.
 
 ## Continuous cube effects
 

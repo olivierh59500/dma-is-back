@@ -47,10 +47,9 @@ type Game struct {
 	cube                       *effects.JellyCube
 	introScroll, mainScroll    *scrolling.Scrolling
 	logoGrid                   composite.ImageGrid
-	logoPath                   motion.NestedOrbit
+	logoPath                   *motion.TrajectoryClock
 	crt                        *effects.CRTOverlay
 	backImg, fontImg, stCanvas *ebiten.Image
-	pos                        float64
 	scrollIteration            int
 	handoff                    *timeline.IntroHandoff
 	audioContext               *audio.Context
@@ -91,10 +90,14 @@ func NewGame() *Game {
 		panic(err)
 	}
 	g.logoGrid = presets.DMALogoGrid()
-	g.logoPath = motion.DefaultNestedOrbit(
+	orbit := motion.DefaultNestedOrbit(
 		motion.Point{X: stCanvasWidth / 2, Y: stCanvasHeight / 2},
 		motion.Point{X: stCanvasWidth / 4, Y: stCanvasHeight / 2.7},
 	)
+	g.logoPath, err = motion.NewTrajectoryClock(motion.TrajectoryClockConfig{Sample: orbit.At, Step: posSpeed})
+	if err != nil {
+		panic(err)
+	}
 	g.crt, err = effects.NewCRTOverlay(presets.DMACRTOverlay())
 	if err != nil {
 		log.Printf("Failed to compile CRT shader: %v", err)
@@ -174,7 +177,9 @@ func (g *Game) Update() error {
 		g.handoff.MarkCue()
 	}
 	g.scrollIteration++
-	g.pos += posSpeed
+	if err := g.logoPath.Step(); err != nil {
+		return err
+	}
 	if err := g.mainScroll.Update(kit.Frame{Tick: uint64(g.scrollIteration)}); err != nil {
 		return err
 	}
@@ -213,7 +218,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.releaseIntroResources()
 	g.mainScroll.Draw(g.stCanvas)
 	if g.backImg != nil {
-		point := g.logoPath.At(g.pos)
+		point := g.logoPath.At()
 		g.logoGrid.DrawCentered(g.stCanvas, g.backImg, point.X, point.Y)
 	}
 	g.cube.Draw(g.stCanvas)
