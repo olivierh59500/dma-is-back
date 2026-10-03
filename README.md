@@ -15,6 +15,29 @@
 
 ---
 
+<!-- Project showcase -->
+## Screenshots
+
+[![A wobbling cube above animated DMA logo tiles](docs/media/screenshot-1.png)](docs/media/screenshot-1.png)
+
+A wobbling cube above animated DMA logo tiles.
+
+[![The jelly cube with a strongly distorted outlined text layer](docs/media/screenshot-2.png)](docs/media/screenshot-2.png)
+
+The jelly cube with a strongly distorted outlined text layer.
+
+## Video
+
+[![Animated preview of DMA is back](docs/media/preview.gif)](https://github.com/olivierh59500/dma-is-back/raw/refs/heads/main/docs/media/preview.mp4)
+
+**[Watch or download the 16-second MP4 preview with sound](https://github.com/olivierh59500/dma-is-back/raw/refs/heads/main/docs/media/preview.mp4)**
+
+This short showcase combines selected passages from the Go production.
+
+The animated image is silent; the MP4 includes the soundtrack.
+
+<!-- End project showcase -->
+
 ## 🎮 Overview
 
 This is a tribute to the golden era of the Atari ST demoscene, reimagined using modern technologies. The demo features the iconic "jelly cube" effect combined with parallax distortion scrolling, bringing classic 16-bit demo effects to contemporary platforms.
